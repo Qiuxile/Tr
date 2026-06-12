@@ -1,0 +1,927 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tr - 终端翻译器</title>
+<link rel="icon" type="image/png" href="/assets/Tr.png">
+<style>
+/* ============================================================
+   Tr — Professional Translation Tool UI
+   ============================================================ */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  /* Dark theme */
+  --bg:       #0f1117;
+  --surface:  #1a1d27;
+  --surface2: #22262f;
+  --border:   #2d3139;
+  --text:     #e8eaed;
+  --text2:    #9aa0a6;
+  --text3:    #5f6368;
+  --accent:   #8ab4f8;
+  --accent2:  #4a6da7;
+  --green:    #34a853;
+  --orange:   #f9ab00;
+  --red:      #ea4335;
+  --radius:   12px;
+  --radius-sm: 8px;
+  --shadow:   0 2px 8px rgba(0,0,0,.3);
+  --transition: 0.2s ease;
+}
+
+html, body {
+  height: 100%;
+  font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 0 20px;
+}
+
+/* ============================================================
+   Header
+   ============================================================ */
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 0 12px;
+  flex-shrink: 0;
+}
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.logo-icon {
+  width: 34px; height: 34px;
+  border-radius: var(--radius-sm);
+}
+.logo h1 { font-size: 1.2rem; font-weight: 600; letter-spacing: -.02em; }
+.logo span { color: var(--text2); font-size: .82rem; margin-left: 4px; }
+
+.header-actions { display: flex; gap: 8px; }
+.icon-btn {
+  width: 36px; height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--text2);
+  font-size: 1.1rem;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: all var(--transition);
+  position: relative;
+}
+.icon-btn:hover { background: var(--surface2); color: var(--text); border-color: var(--text3); }
+.icon-btn.active { background: var(--accent2); color: #fff; border-color: var(--accent2); }
+
+/* ============================================================
+   Language bar
+   ============================================================ */
+.lang-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 0;
+  flex-shrink: 0;
+}
+.lang-select {
+  flex: 1;
+  position: relative;
+}
+.lang-select select {
+  width: 100%;
+  padding: 10px 36px 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-size: .94rem;
+  font-family: inherit;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  transition: border-color var(--transition);
+}
+.lang-select select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.lang-select::after {
+  content: '▾';
+  position: absolute;
+  right: 12px; top: 50%;
+  transform: translateY(-50%);
+  color: var(--text2);
+  pointer-events: none;
+  font-size: .75rem;
+}
+.swap-btn {
+  width: 36px; height: 36px;
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--text2);
+  font-size: 1.1rem;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: all var(--transition);
+  margin: 0 4px;
+}
+.swap-btn:hover { background: var(--surface2); color: var(--text); border-color: var(--text3); }
+.swap-btn:active { transform: rotate(180deg); }
+
+.auto-detect-badge {
+  display: inline-block;
+  font-size: .7rem;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--accent2);
+  color: #fff;
+  margin-left: 8px;
+  font-weight: 500;
+}
+
+/* ============================================================
+   Translation panels — side by side
+   ============================================================ */
+.main-content {
+  flex: 1;
+  display: flex;
+  gap: 2px;
+  min-height: 0;
+  padding: 8px 0;
+}
+.panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  position: relative;
+}
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.panel-label {
+  font-size: .75rem;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--text3);
+  font-weight: 600;
+}
+.panel-actions {
+  display: flex;
+  gap: 4px;
+}
+.small-btn {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text2);
+  font-size: .75rem;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all var(--transition);
+  white-space: nowrap;
+}
+.small-btn:hover { background: var(--surface2); color: var(--text); }
+.small-btn:disabled { opacity: .35; cursor: not-allowed; }
+
+.panel-body {
+  flex: 1;
+  position: relative;
+  min-height: 0;
+}
+.panel-body textarea {
+  width: 100%; height: 100%;
+  padding: 16px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 1.05rem;
+  line-height: 1.7;
+  font-family: inherit;
+  resize: none;
+  outline: none;
+}
+.panel-body textarea::placeholder { color: var(--text3); }
+
+.result-content {
+  padding: 16px;
+  font-size: 1.05rem;
+  line-height: 1.7;
+  color: var(--text);
+  word-break: break-word;
+  height: 100%;
+  overflow-y: auto;
+}
+.result-content.empty {
+  color: var(--text3);
+  display: flex; align-items: center; justify-content: center;
+}
+
+.panel-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 14px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+  font-size: .72rem;
+  color: var(--text3);
+}
+
+/* ============================================================
+   Actions bar
+   ============================================================ */
+.actions-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  flex-shrink: 0;
+}
+.btn-translate {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 28px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: #0f1117;
+  font-size: .94rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all var(--transition);
+  letter-spacing: .01em;
+}
+.btn-translate:hover { filter: brightness(1.1); transform: translateY(-1px); box-shadow: 0 4px 12px rgba(138,180,248,.25); }
+.btn-translate:active { transform: translateY(0); }
+.btn-translate:disabled { opacity: .5; cursor: not-allowed; transform: none; box-shadow: none; }
+
+.offline-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: .82rem;
+  color: var(--text2);
+  cursor: pointer;
+  user-select: none;
+}
+.offline-toggle input { display: none; }
+.toggle-track {
+  width: 38px; height: 22px;
+  background: var(--border);
+  border-radius: 11px;
+  position: relative;
+  transition: background var(--transition);
+}
+.toggle-track::after {
+  content: '';
+  position: absolute;
+  top: 3px; left: 3px;
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform var(--transition);
+}
+.offline-toggle input:checked + .toggle-track { background: var(--accent2); }
+.offline-toggle input:checked + .toggle-track::after { transform: translateX(16px); }
+
+.spacer { flex: 1; }
+
+/* ============================================================
+   Status bar
+   ============================================================ */
+footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 0 14px;
+  font-size: .72rem;
+  color: var(--text3);
+  flex-shrink: 0;
+}
+.status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.status-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--green);
+}
+.status-dot.offline { background: var(--orange); }
+
+/* ============================================================
+   Settings panel (slide-over)
+   ============================================================ */
+.overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,.5);
+  z-index: 99;
+  opacity: 0; visibility: hidden;
+  transition: all var(--transition);
+}
+.overlay.open { opacity: 1; visibility: visible; }
+
+.settings-panel {
+  position: fixed;
+  top: 0; right: -340px;
+  width: 320px; height: 100vh;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  z-index: 100;
+  padding: 24px;
+  transition: right .25s ease;
+  overflow-y: auto;
+}
+.settings-panel.open { right: 0; }
+
+.settings-panel h3 {
+  font-size: 1rem;
+  margin-bottom: 20px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.settings-panel label {
+  display: block;
+  font-size: .78rem;
+  color: var(--text2);
+  margin-bottom: 4px;
+  margin-top: 14px;
+}
+.settings-panel select,
+.settings-panel input {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text);
+  font-size: .88rem;
+  font-family: inherit;
+  outline: none;
+  transition: border-color var(--transition);
+}
+.settings-panel select:focus,
+.settings-panel input:focus { border-color: var(--accent); }
+
+.settings-panel .btn-save {
+  width: 100%;
+  margin-top: 20px;
+  padding: 10px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: #0f1117;
+  font-size: .88rem;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all var(--transition);
+}
+.settings-panel .btn-save:hover { filter: brightness(1.1); }
+.settings-panel .save-msg {
+  font-size: .78rem;
+  margin-top: 8px;
+  text-align: center;
+  color: var(--green);
+}
+
+.settings-panel .close-btn {
+  position: absolute;
+  top: 16px; right: 16px;
+  width: 30px; height: 30px;
+  border: none;
+  background: transparent;
+  color: var(--text2);
+  font-size: 1.3rem;
+  cursor: pointer;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  transition: all var(--transition);
+}
+.settings-panel .close-btn:hover { background: var(--surface2); color: var(--text); }
+
+/* ============================================================
+   Badge on result
+   ============================================================ */
+.source-badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 10px;
+  font-size: .7rem;
+  font-weight: 600;
+  margin-left: 10px;
+  vertical-align: middle;
+}
+.source-badge.api { background: rgba(138,180,248,.18); color: var(--accent); }
+.source-badge.cache { background: rgba(52,168,83,.18); color: var(--green); }
+.source-badge.dict { background: rgba(249,171,0,.18); color: var(--orange); }
+
+/* ============================================================
+   Spinner
+   ============================================================ */
+@keyframes spin { to { transform: rotate(360deg); } }
+.spinner {
+  display: inline-block;
+  width: 18px; height: 18px;
+  border: 2px solid rgba(15,17,23,.3);
+  border-top-color: #0f1117;
+  border-radius: 50%;
+  animation: spin .6s linear infinite;
+}
+
+/* ============================================================
+   Toast
+   ============================================================ */
+.toast {
+  position: fixed;
+  bottom: 30px;
+  left: 50%;
+  transform: translateX(-50%) translateY(80px);
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 10px 24px;
+  border-radius: 20px;
+  font-size: .84rem;
+  z-index: 200;
+  opacity: 0;
+  transition: all .3s ease;
+  pointer-events: none;
+}
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* ============================================================
+   Responsive
+   ============================================================ */
+@media (max-width: 640px) {
+  .main-content { flex-direction: column; }
+  #app { padding: 0 12px; }
+  .lang-bar { flex-wrap: wrap; }
+}
+</style>
+</head>
+<body>
+
+<div id="app">
+  <!-- Header -->
+  <header>
+    <div class="logo">
+      <img class="logo-icon" src="/assets/Tr.png" alt="Tr">
+      <div>
+        <h1 data-i18n="app.name">Tr - 终端翻译器</h1>
+        <span>翻译，就这么简单</span>
+      </div>
+    </div>
+    <div class="header-actions">
+      <button class="icon-btn" id="btn-settings" title="设置">⚙</button>
+    </div>
+  </header>
+
+  <!-- Language bar -->
+  <div class="lang-bar">
+    <div class="lang-select" style="flex:1">
+      <select id="source-lang">
+        <option value="auto">Auto Detect</option>
+        <option value="en">English</option>
+        <option value="zh">中文</option>
+        <option value="ja">日本語</option>
+        <option value="ko">한국어</option>
+        <option value="fr">Français</option>
+        <option value="de">Deutsch</option>
+        <option value="es">Español</option>
+        <option value="ru">Русский</option>
+      </select>
+    </div>
+    <button class="swap-btn" id="btn-swap" title="交换语言">⇄</button>
+    <div class="lang-select" style="flex:1">
+      <select id="target-lang">
+        <option value="zh" selected>中文</option>
+        <option value="en">English</option>
+        <option value="ja">日本語</option>
+        <option value="ko">한국어</option>
+        <option value="fr">Français</option>
+        <option value="de">Deutsch</option>
+        <option value="es">Español</option>
+        <option value="ru">Русский</option>
+      </select>
+    </div>
+  </div>
+
+  <!-- Main: Input + Output panels -->
+  <div class="main-content">
+    <!-- Input panel -->
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-label">原文</span>
+        <div class="panel-actions">
+          <button class="small-btn" id="btn-clear" disabled>清空</button>
+        </div>
+      </div>
+      <div class="panel-body">
+        <textarea id="input-text" placeholder="输入要翻译的文本..." data-i18n-placeholder="gui.input_placeholder"></textarea>
+      </div>
+      <div class="panel-footer">
+        <span id="char-count">0 / 5000</span>
+      </div>
+    </div>
+
+    <!-- Output panel -->
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-label">译文</span>
+        <div class="panel-actions">
+          <button class="small-btn" id="btn-copy" disabled>复制</button>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div class="result-content empty" id="result" data-i18n="gui.result_placeholder">输入文本后点击翻译</div>
+      </div>
+      <div class="panel-footer">
+        <span id="result-source"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Actions -->
+  <div class="actions-bar">
+    <button class="btn-translate" id="btn-translate" data-i18n="gui.translate_btn">翻译</button>
+    <label class="offline-toggle" title="仅使用缓存和词典">
+      <input type="checkbox" id="offline-mode">
+      <span class="toggle-track"></span>
+      <span>离线模式</span>
+    </label>
+    <span class="spacer"></span>
+    <span style="font-size:.78rem;color:var(--text3)" id="shortcut-hint">Ctrl+Enter</span>
+  </div>
+
+  <!-- Footer -->
+  <footer>
+    <div class="status-indicator">
+      <span class="status-dot" id="status-dot"></span>
+      <span id="status-text">就绪</span>
+    </div>
+    <span id="backend-info">MyMemory (免费)</span>
+    <span>Tr v<span id="version">1.1.0</span></span>
+  </footer>
+</div>
+
+<!-- Settings overlay -->
+<div class="overlay" id="overlay"></div>
+<div class="settings-panel" id="settings-panel">
+  <button class="close-btn" id="btn-close-settings">✕</button>
+  <h3>设置</h3>
+  <label data-i18n="gui.ui_lang">界面语言</label>
+  <select id="cfg-ui-lang">
+    <option value="zh">中文</option>
+    <option value="en">English</option>
+    <option value="ja">日本語</option>
+  </select>
+  <label>API URL</label>
+  <input type="text" id="cfg-api-url" placeholder="None = MyMemory (免费)">
+  <label>源语言</label>
+  <select id="cfg-source-lang">
+    <option value="en">English</option>
+    <option value="zh">中文</option>
+    <option value="ja">日本語</option>
+    <option value="ko">한국어</option>
+    <option value="fr">Français</option>
+    <option value="de">Deutsch</option>
+    <option value="es">Español</option>
+    <option value="ru">Русский</option>
+    <option value="auto">Auto Detect</option>
+  </select>
+  <label>目标语言</label>
+  <select id="cfg-target-lang">
+    <option value="zh">中文</option>
+    <option value="en">English</option>
+    <option value="ja">日本語</option>
+    <option value="ko">한국어</option>
+    <option value="fr">Français</option>
+    <option value="de">Deutsch</option>
+    <option value="es">Español</option>
+    <option value="ru">Русский</option>
+  </select>
+  <button class="btn-save" id="btn-save-config">保存设置</button>
+  <div class="save-msg" id="config-msg"></div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<!-- ============================================================
+     Scripts
+     ============================================================ -->
+<script>
+// === I18N data injected by Go server ===
+window.__I18N__ = window.__I18N__ || { zh: {}, en: {}, ja: {} };
+window.__CONFIG__ = window.__CONFIG__ || {};
+
+const I18N = window.__I18N__;
+const INITIAL_CONFIG = window.__CONFIG__;
+
+function T(key) {
+  const lang = document.getElementById('cfg-ui-lang')?.value || INITIAL_CONFIG.ui_lang || 'zh';
+  return (I18N[lang] && I18N[lang][key]) || (I18N['en'] && I18N['en'][key]) || key;
+}
+
+// === DOM refs ===
+const $ = id => document.getElementById(id);
+const inputText   = $('input-text');
+const sourceLang  = $('source-lang');
+const targetLang  = $('target-lang');
+const offlineMode = $('offline-mode');
+const btnTranslate = $('btn-translate');
+const btnClear    = $('btn-clear');
+const btnCopy     = $('btn-copy');
+const btnSwap     = $('btn-swap');
+const resultBox   = $('result');
+const resultSrc   = $('result-source');
+const charCount   = $('char-count');
+const cfgUiLang   = $('cfg-ui-lang');
+const cfgApiUrl   = $('cfg-api-url');
+const cfgSrcLang  = $('cfg-source-lang');
+const cfgTgtLang  = $('cfg-target-lang');
+const btnSaveCfg  = $('btn-save-config');
+const configMsg   = $('config-msg');
+const statusDot   = $('status-dot');
+const statusText  = $('status-text');
+const backendInfo = $('backend-info');
+const versionEl   = $('version');
+const overlay     = $('overlay');
+const settingsPanel = $('settings-panel');
+const toast       = $('toast');
+
+let currentConfig = { ...INITIAL_CONFIG };
+let translating = false;
+let lastResultText = '';
+
+// === Init ===
+function init() {
+  versionEl.textContent = INITIAL_CONFIG.version || '1.1.0';
+  sourceLang.value = currentConfig.source_lang || 'en';
+  targetLang.value = currentConfig.target_lang || 'zh';
+  cfgUiLang.value = currentConfig.ui_lang || 'zh';
+  cfgApiUrl.value = (currentConfig.api_url && currentConfig.api_url !== 'None') ? currentConfig.api_url : '';
+  cfgSrcLang.value = currentConfig.source_lang || 'en';
+  cfgTgtLang.value = currentConfig.target_lang || 'zh';
+  applyI18n();
+  updateBackendInfo();
+  updateStatus('online');
+  updateCharCount();
+  updateClearBtn();
+}
+
+function applyI18n() {
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    el.textContent = T(el.dataset.i18n);
+  });
+  document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+    el.placeholder = T(el.dataset.i18nPlaceholder);
+  });
+  document.title = T('app.name');
+}
+
+function updateBackendInfo() {
+  const url = currentConfig.api_url === 'None' ? '' : currentConfig.api_url;
+  backendInfo.textContent = url ? `${url}` : `MyMemory (${T('gui.free')})`;
+}
+
+function updateStatus(mode) {
+  statusDot.className = 'status-dot' + (mode === 'offline' ? ' offline' : '');
+  if (translating) {
+    statusText.textContent = T('gui.translating');
+  } else {
+    statusText.textContent = mode === 'offline' ? T('gui.offline') : T('gui.ready');
+  }
+}
+
+function updateCharCount() {
+  const len = inputText.value.length;
+  charCount.textContent = `${len} / 5000`;
+  charCount.style.color = len > 4500 ? 'var(--orange)' : len > 4900 ? 'var(--red)' : '';
+  updateClearBtn();
+}
+
+function updateClearBtn() {
+  btnClear.disabled = inputText.value.length === 0;
+}
+
+function updateCopyBtn() {
+  btnCopy.disabled = !lastResultText || resultBox.classList.contains('empty');
+}
+
+// === Settings panel ===
+function openSettings() {
+  overlay.classList.add('open');
+  settingsPanel.classList.add('open');
+}
+function closeSettings() {
+  overlay.classList.remove('open');
+  settingsPanel.classList.remove('open');
+}
+
+// === Toast ===
+let toastTimer;
+function showToast(msg) {
+  clearTimeout(toastTimer);
+  toast.textContent = msg;
+  toast.classList.add('show');
+  toastTimer = setTimeout(() => toast.classList.remove('show'), 2000);
+}
+
+// === Translate ===
+async function doTranslate() {
+  const text = inputText.value.trim();
+  if (!text) {
+    resultBox.textContent = T('gui.empty_input');
+    resultBox.className = 'result-content empty';
+    lastResultText = '';
+    updateCopyBtn();
+    return;
+  }
+  if (translating) return;
+
+  translating = true;
+  btnTranslate.disabled = true;
+  btnTranslate.innerHTML = '<span class="spinner"></span> ' + T('gui.translating');
+  resultBox.textContent = '';
+  resultBox.className = 'result-content';
+  updateStatus(offlineMode.checked ? 'offline' : 'online');
+
+  try {
+    const res = await fetch('/api/translate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text: text,
+        source: sourceLang.value,
+        target: targetLang.value,
+        offline: offlineMode.checked
+      })
+    });
+    const data = await res.json();
+    if (data.error) {
+      resultBox.textContent = data.error;
+      resultBox.className = 'result-content empty';
+      lastResultText = '';
+      updateStatus('online');
+    } else {
+      const badgeHTML = data.source
+        ? ` <span class="source-badge ${data.source}">${data.source === 'api' ? 'API' : data.source === 'cache' ? T('gui.cache') : T('gui.dict')}</span>`
+        : '';
+      resultBox.innerHTML = escapeHTML(data.text) + badgeHTML;
+      resultBox.className = 'result-content';
+      lastResultText = data.text;
+      resultSrc.textContent = data.source === 'api'
+        ? `API · ${sourceLang.value} → ${targetLang.value}`
+        : data.source === 'cache'
+          ? `${T('gui.cache')} · ${sourceLang.value} → ${targetLang.value}`
+          : data.source === 'dictionary'
+            ? `${T('gui.dict')} · ${sourceLang.value} → ${targetLang.value}`
+            : '';
+      updateStatus(data.source === 'api' ? 'online' : 'offline');
+    }
+  } catch (err) {
+    resultBox.textContent = T('gui.network_error');
+    resultBox.className = 'result-content empty';
+    lastResultText = '';
+    updateStatus('offline');
+    resultSrc.textContent = '';
+  } finally {
+    translating = false;
+    btnTranslate.disabled = false;
+    btnTranslate.textContent = T('gui.translate_btn');
+    updateCopyBtn();
+  }
+}
+
+function escapeHTML(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+// === Copy ===
+async function copyResult() {
+  if (!lastResultText) return;
+  try {
+    await navigator.clipboard.writeText(lastResultText);
+    showToast('✓ 已复制到剪贴板');
+  } catch {
+    // Fallback for older browsers
+    const ta = document.createElement('textarea');
+    ta.value = lastResultText;
+    ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    showToast('✓ 已复制');
+  }
+}
+
+// === Swap languages ===
+function swapLanguages() {
+  if (sourceLang.value === 'auto') return;
+  const src = sourceLang.value;
+  const tgt = targetLang.value;
+  sourceLang.value = tgt;
+  targetLang.value = src;
+}
+
+// === Save config ===
+async function saveConfig() {
+  const newConfig = {
+    source_lang: cfgSrcLang.value,
+    target_lang: cfgTgtLang.value,
+    ui_lang: cfgUiLang.value,
+    api_url: cfgApiUrl.value.trim() || 'None'
+  };
+  try {
+    const res = await fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newConfig)
+    });
+    const data = await res.json();
+    if (data.ok) {
+      currentConfig = { ...newConfig, api_url: newConfig.api_url };
+      // Sync main language selectors
+      sourceLang.value = currentConfig.source_lang;
+      targetLang.value = currentConfig.target_lang;
+      updateBackendInfo();
+      applyI18n();
+      configMsg.textContent = '✓ ' + T('gui.saved');
+      setTimeout(() => { configMsg.textContent = ''; }, 2500);
+    } else {
+      configMsg.textContent = data.error || T('gui.save_failed');
+      configMsg.style.color = 'var(--red)';
+    }
+  } catch {
+    configMsg.textContent = T('gui.save_failed');
+    configMsg.style.color = 'var(--red)';
+  }
+}
+
+// === Event listeners ===
+btnTranslate.addEventListener('click', doTranslate);
+btnClear.addEventListener('click', () => { inputText.value = ''; updateCharCount(); inputText.focus(); });
+btnCopy.addEventListener('click', copyResult);
+btnSwap.addEventListener('click', swapLanguages);
+btnSaveCfg.addEventListener('click', saveConfig);
+
+inputText.addEventListener('input', updateCharCount);
+inputText.addEventListener('keydown', e => {
+  if (e.ctrlKey && e.key === 'Enter') doTranslate();
+});
+
+offlineMode.addEventListener('change', () => {
+  updateStatus(offlineMode.checked ? 'offline' : 'online');
+});
+
+$('btn-settings').addEventListener('click', openSettings);
+$('btn-close-settings').addEventListener('click', closeSettings);
+overlay.addEventListener('click', closeSettings);
+
+cfgUiLang.addEventListener('change', () => applyI18n());
+
+// Close settings on Escape
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && settingsPanel.classList.contains('open')) {
+    closeSettings();
+  }
+});
+
+// === Init ===
+init();
+</script>
+</body>
+</html>
