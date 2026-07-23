@@ -1,145 +1,67 @@
-# Tr
+# Tr —— 极简桌面翻译助手
 
-> 一个简单优雅的终端翻译工具，使用 Go 语言编写。
+[![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)](https://golang.org/)
+[![Wails](https://img.shields.io/badge/Wails-v2.0+-blue?style=flat)](https://wails.io/)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](https://github.com/yourname/Tr)
 
-Tr 是一款轻量级的命令行翻译工具，直接在终端中运行。默认使用免费的 [MyMemory](https://mymemory.translated.net/) 翻译 API，同时也支持兼容 LibreTranslate / DeepLX 格式的自定义 API。内置离线翻译功能，无网络时也能使用。
+> **Tr** 是一款专为日常办公、阅读、学习设计的轻量级桌面翻译工具。它不再是一个命令行的极客玩具，而是面向所有人的智能助手。
 
-## 特性
+![演示截图占位](docs/screenshot.png)
 
-- **快速翻译** — 输入 `tr <文本>` 即可即时获取翻译结果
-- **图形界面** — 支持 `tr -gui` 启动 Web 图形界面，在浏览器中使用
-- **多语言界面** — 终端界面支持中文/English/日本語三种显示语言
-- **多语言支持** — 可自由配置源语言和目标语言
-- **灵活的 API 后端** — 默认使用 MyMemory（免费，无需 API Key），也可接入自己的 API
-- **离线翻译** — 内置翻译缓存和嵌入式英中词典，断网也能翻译
-- **管道输入** — 支持 stdin 管道输入，可与其他命令组合使用
-- **简洁的配置** — 通过命令轻松管理各项设置
-- **Only Windows** — 目前只支持 Windows，但很快就可以支持Linux，MacOS了
-- **Windows 安装包** — 提供 Inno Setup 安装程序，自动注册系统 PATH
+---
 
-## 安装
+## ✨ 核心特性
 
-### 下载二进制文件
+- **🖱️ 划词即译**：在任何软件（浏览器、PDF、IDE）中选中文字，自动弹出翻译结果，无需复制粘贴。
+- **📷 截屏 OCR 翻译**：遇到图片、扫描件、无法复制的文字，一键截图，即刻 OCR 识别并翻译。
+- **🎯 无感弹窗**：仿 Spotlight 风格的毛玻璃小窗，用完即走，不打扰你的工作流。
+- **⚡ 极速响应**：本地缓存机制 + 轻量级 Go 后端，毫秒级响应，告别卡顿。
+- **⌨️ 全盘快捷键**：支持自定义全局快捷键，随时唤出主界面或触发截图。
+- **🌐 多引擎聚合**：内置多种翻译源（MyMemory / 百度 / 有道 / DeepL），自由切换。
 
-从 [Releases](https://github.com/Qiuxile/Tr/releases) 页面下载最新版本，并将其所在目录添加到系统 `PATH` 中。
+---
 
-### Windows 安装程序
+## 🛠️ 技术架构
 
-运行 `Tr_v1.1.0_Setup.exe` 安装程序，会自动将 `Tr` 添加到系统 PATH。
+- **后端框架**：[Wails](https://wails.io/) + **Go** —— 负责系统钩子、全局监听、HTTP 请求、缓存与 OCR 调度。
+- **前端界面**：Vue 3 / React + CSS 毛玻璃效果 —— 构建流畅、美观的无边框透明弹窗。
+- **跨平台能力**：一套代码同时编译 Windows 和 macOS 原生应用，资源占用极低。
 
-### 从源码编译
+---
 
-```bash
-git clone https://github.com/Qiuxile/Tr.git
-cd Tr
-go build -o tr .
-```
+## 📥 下载与安装
 
-## 使用
+前往 [Releases](https://github.com/yourname/Tr/releases) 页面下载对应平台的最新安装包。
 
-```bash
-# 翻译文本（默认：英 → 中）
-tr "Hello, world!"
+| 平台 | 安装方式 |
+| :--- | :--- |
+| **Windows** | 下载 `.exe` 安装包，双击安装即可。 |
+| **macOS** | 下载 `.dmg` 文件，拖拽 `Tr.app` 到 Applications 文件夹。 |
+| **Linux** | 下载 `AppImage` 文件，赋予执行权限后运行。 |
 
-# 查看当前配置
-tr -config show
+---
 
-# 修改语言设置
-tr -config set source_lang en
-tr -config set target_lang ja
+## 🚀 快速使用指南
 
-# 使用自定义 API（LibreTranslate / DeepLX 格式）
-tr -config set api_url https://your-api.example.com/translate
+1.  **启动**：安装后，程序自动在系统托盘后台运行。
+2.  **划词翻译**：选中任意文字 -> 弹出翻译结果（默认只需选中，无需按任何键）。
+3.  **手动翻译**：按下 `Ctrl+Shift+T` (默认) 呼出主输入框，输入文字按回车翻译。
+4.  **截屏翻译**：按下 `Ctrl+Shift+S` (默认)，鼠标拖拽框选屏幕区域，自动识别并翻译。
+5.  **设置**：右键点击托盘图标，选择“设置”可切换翻译源和修改快捷键。
 
-# 离线模式（仅使用缓存和内置词典）
-tr -o "hello"
-tr --offline "good morning"
+---
 
-# 管道输入
-echo "hello world" | tr
+## 👨‍💻 开发者指南 (本地构建)
 
-# 启动图形界面
-tr -gui
-tr -g           # 简写形式
+如果你想自行编译或参与开发：
 
-# 查看版本
-tr -version
+1.  **前置条件**：
+    -   Go 1.21+ ([下载](https://golang.org/dl/))
+    -   Node.js 16+ ([下载](https://nodejs.org/))
+    -   Wails CLI: `go install github.com/wailsapp/wails/v2/cmd/wails@latest`
 
-# 查看关于信息
-tr -about
-
-# 获取帮助
-tr -help
-```
-
-## 离线翻译
-
-Tr 支持离线翻译，通过两层机制实现：
-
-### 1. 翻译缓存
-
-每次在线翻译的结果会自动缓存到本地（`cache.json`，最多 500 条）。再次翻译相同内容时，即使离线也能从缓存中获取结果。缓存采用 LRU 淘汰策略，自动管理空间。
-
-### 2. 内置词典
-
-内置了约 400 个常用英文单词和短语的英→中翻译对照表。当离线且缓存未命中时，会尝试词典翻译：
-- **精确匹配**：直接查找完整短语（如 "good morning" → "早上好"）
-- **逐词翻译**：对多词输入逐词查找（如 "beautiful flower" → "美丽 花"）
-
-使用 `-o` / `--offline` 标志可强制使用离线模式，跳过网络请求。
-
-### 翻译回退链路
-
-```
-在线 API → 本地缓存 → 内置词典 → 报错
-```
-
-## 配置
-
-配置文件存放位置：
-
-- **Windows**：`C:\Users\<用户名>\AppData\Roaming\Tr\config.json`
-
-### 默认配置
-
-```json
-{
-  "source_lang": "en",
-  "target_lang": "zh",
-  "api_url": "None"
-}
-```
-
-| 键 | 说明 | 默认值 |
-|---|------|--------|
-| `source_lang` | 源语言代码 | `en` |
-| `target_lang` | 目标语言代码 | `zh` |
-| `api_url` | 自定义 API 地址（设为 `None` 则使用 MyMemory） | `None` |
-
-### 子命令别名
-
-| 主命令 | 别名 |
-|--------|------|
-| `-config` | `--config`、`-c` |
-| `-help` | `--help`、`-h` |
-| `-version` | `--version`、`-v` |
-| `-about` | `--about`、`-a` |
-| `-offline` | `--offline`、`-o` |
-| `-gui` | `--gui`、`-g` |
-
-## API 兼容性
-
-Tr 内置支持两种翻译后端：
-
-1. **MyMemory**（默认）— 免费翻译 API，无需 API Key
-2. **LibreTranslate / DeepLX** 兼容 API — 将 `api_url` 设置为自托管或第三方 API 地址即可
-
-## 许可证
-
-本项目基于 [MIT License](LICENSE) 开源。
-
-Copyright (c) 2026 Surile
-
-## 作者
-
-由 **Surile**（[@Qiuxile](https://github.com/Qiuxile)）开发
+2.  **克隆与安装**：
+    ```bash
+    git clone https://github.com/yourname/Tr.git
+    cd Tr
+    wails install
