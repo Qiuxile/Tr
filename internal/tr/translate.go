@@ -18,7 +18,9 @@ var (
 
 // Options carries per-invocation runtime flags (not persisted to config).
 type Options struct {
-	Offline bool // force offline mode; skip API calls
+	Offline bool   // force offline mode; skip API calls
+	Source  string // override source language; "auto" = detect from text
+	Target  string // override target language
 }
 
 // TranslateResult holds the completed translation and metadata about its source.
@@ -34,10 +36,26 @@ var httpClient = &http.Client{
 
 // Translate is the top-level translation pipeline.
 // It tries: online API -> cache -> dictionary -> error.
+//
+// The effective language pair comes from cfg, overridable per invocation
+// through opts: opts.Target replaces the target language, and setting
+// opts.Source to "auto" (or configuring source_lang = "auto") makes the
+// source language detected from the text itself.
 func Translate(cfg Config, opts Options, cache *Cache, text string) (TranslateResult, error) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return TranslateResult{}, ErrEmptyInput
+	}
+
+	source, target := cfg.SourceLang, cfg.TargetLang
+	if opts.Source != "" {
+		source = opts.Source
+	}
+	if opts.Target != "" {
+		target = opts.Target
+	}
+	if source == "auto" {
+		source = DetectLang(text)
 	}
 
 	normalized := normalizeCacheKey(text)
@@ -45,19 +63,19 @@ func Translate(cfg Config, opts Options, cache *Cache, text string) (TranslateRe
 
 	// Step 1: Try online API (unless offline mode forced)
 	if !opts.Offline && cfg.ApiURL != "None" {
-		result, err := translateWithGenericAPI(text, cfg.SourceLang, cfg.TargetLang, cfg.ApiURL, lang)
+		result, err := translateWithGenericAPI(text, source, target, cfg.ApiURL, lang)
 		if err == nil {
 			if cache != nil {
-				cache.Put(cfg.SourceLang, cfg.TargetLang, normalized, result)
+				cache.Put(source, target, normalized, result)
 			}
 			return TranslateResult{Text: result, Source: "api"}, nil
 		}
 	}
 	if !opts.Offline && cfg.ApiURL == "None" {
-		result, err := translateWithMyMemory(text, cfg.SourceLang, cfg.TargetLang, lang)
+		result, err := translateWithMyMemory(text, source, target, lang)
 		if err == nil {
 			if cache != nil {
-				cache.Put(cfg.SourceLang, cfg.TargetLang, normalized, result)
+				cache.Put(source, target, normalized, result)
 			}
 			return TranslateResult{Text: result, Source: "api"}, nil
 		}
@@ -65,13 +83,13 @@ func Translate(cfg Config, opts Options, cache *Cache, text string) (TranslateRe
 
 	// Step 2: Try cache
 	if cache != nil {
-		if cached, ok := cache.Get(cfg.SourceLang, cfg.TargetLang, normalized); ok {
+		if cached, ok := cache.Get(source, target, normalized); ok {
 			return TranslateResult{Text: cached, Source: "cache"}, nil
 		}
 	}
 
 	// Step 3: Try dictionary (en-zh only, word-level)
-	if cfg.SourceLang == "en" && cfg.TargetLang == "zh" {
+	if source == "en" && target == "zh" {
 		if dictResult, ok := DictLookup(text); ok {
 			return TranslateResult{Text: dictResult, Source: "dictionary"}, nil
 		}

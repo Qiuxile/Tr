@@ -50,5 +50,5 @@ func translateWithGenericAPI(text, sourceLang, targetLang, apiURL, lang string) 
 		return deepLX.Data, nil
 	}
 
-	return "", fmt.Errorf(T(lang, "api.gen_format", string(body)))
+	return "", fmt.Errorf("%s", T(lang, "api.gen_format", string(body)))
 }

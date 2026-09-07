@@ -45,7 +45,7 @@ func LoadCache(path string) (*Cache, error) {
 		return c, nil // missing or unreadable; start fresh
 	}
 	var disk struct {
-		Version int                    `json:"version"`
+		Version int                   `json:"version"`
 		Entries map[string]CacheEntry `json:"entries"`
 	}
 	if err := json.Unmarshal(data, &disk); err != nil {
@@ -129,7 +129,7 @@ func (c *Cache) evictOldest(n int) {
 // save writes the current in-memory cache to disk.
 func (c *Cache) save() {
 	disk := struct {
-		Version int                    `json:"version"`
+		Version int                   `json:"version"`
 		Entries map[string]CacheEntry `json:"entries"`
 	}{
 		Version: 1,
@@ -148,7 +148,7 @@ func (c *Cache) Flush() error {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	disk := struct {
-		Version int                    `json:"version"`
+		Version int                   `json:"version"`
 		Entries map[string]CacheEntry `json:"entries"`
 	}{
 		Version: 1,

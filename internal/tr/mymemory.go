@@ -37,7 +37,7 @@ func translateWithMyMemory(text, sourceLang, targetLang, lang string) (string, e
 		return "", fmt.Errorf("%s: %w", T(lang, "api.mm_parse"), err)
 	}
 	if result.ResponseData.TranslatedText == "" {
-		return "", fmt.Errorf(T(lang, "api.mm_empty", text))
+		return "", fmt.Errorf("%s", T(lang, "api.mm_empty", text))
 	}
 	return result.ResponseData.TranslatedText, nil
 }

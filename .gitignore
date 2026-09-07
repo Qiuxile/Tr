@@ -1,3 +1,10 @@
-build/bin
-node_modules
-frontend/dist
+# 构建产物
+/bin/
+*.exe
+
+# 本地构建缓存(沙箱/离线环境使用)
+.gocache/
+.gomodcache/
+
+# 日志与临时文件
+*.log
