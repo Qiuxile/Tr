@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"regexp"
 	"strings"
 
 	"golang.org/x/term"
@@ -129,42 +128,84 @@ func Run(args []string) int {
 	return 0
 }
 
-// Arrow-syntax matchers for "tr <text> -> <lang>".
-// arrowSpaced requires whitespace around the arrow ("你好 -> en").
-// arrowGlued accepts the no-space form ("你好->en") and lines that begin
-// with the arrow (for piped input: "-> en").
-var (
-	arrowSpaced = regexp.MustCompile(`^(.*?)\s+(?:->|→)\s*([^\s]+)\s*$`)
-	arrowGlued  = regexp.MustCompile(`^(.*?)(?:->|→)([^\s]+)\s*$`)
-)
-
-// splitArrow applies the arrow syntax to the collected arguments: the returned
-// text is the input with the "-> <lang>" clause removed, targetCode the
-// canonical target language, and ok whether a clause was accepted.
+// splitArrow applies the arrow syntax to the collected arguments.
+//
+// Arrow mode is strict and positional:
+//
+//	tr <content> -> <lang> [ignored...]
+//
+// The translation input is exactly the first argument (quote it if it contains
+// spaces), the target language is the token following the arrow, and every
+// other argument is ignored. A glued form inside the first argument
+// ("你好->en") is accepted too, as is a leading arrow for piped input
+// ("-> en" with the text on stdin).
+//
+// Without an arrow the whole argument list is joined, so `tr hello world`
+// still translates both words.
 //
 // The clause is a one-shot override for this single invocation: it only affects
 // the Options handed to the pipeline and never writes the config file. Changing
 // the persistent target language is what `tr config set target_lang` is for.
 //
-// If the target cannot be recognized as a language, the whole line is treated
-// as plain text (with a notice), so ordinary text containing "->" is never
-// mangled.
+// If an arrow is present but the target cannot be recognized as a language, the
+// whole line is treated as plain text (with a notice), so ordinary text
+// containing "->" is never mangled.
 func splitArrow(lang string, args []string) (text string, targetCode string, ok bool) {
-	joined := strings.TrimSpace(strings.Join(args, " "))
+	if len(args) == 0 {
+		return "", "", false
+	}
+	plain := strings.TrimSpace(strings.Join(args, " "))
 
-	match := arrowSpaced.FindStringSubmatch(joined)
-	if match == nil {
-		match = arrowGlued.FindStringSubmatch(joined)
+	// Arrow inside the first argument: "你好->en" / "你好→en".
+	for _, arrow := range []string{"->", "→"} {
+		idx := strings.Index(args[0], arrow)
+		if idx <= 0 {
+			continue
+		}
+		code := strings.TrimSpace(args[0][idx+len(arrow):])
+		if c, recognized := normalizeLangArg(code); recognized {
+			return strings.TrimSpace(args[0][:idx]), c, true
+		}
 	}
-	if match == nil {
-		return joined, "", false
+
+	// Arrow as its own argument (possibly glued to the language: "->en").
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if !isArrowArgument(arg) {
+			continue
+		}
+		code := ""
+		switch {
+		case arg == "->" || arg == "→":
+			if i+1 < len(args) {
+				code = args[i+1]
+			}
+		case strings.HasPrefix(arg, "->"):
+			code = arg[2:]
+		default:
+			code = strings.TrimPrefix(arg, "→")
+		}
+
+		code = strings.TrimSpace(code)
+		c, recognized := normalizeLangArg(code)
+		if !recognized {
+			fmt.Fprintln(os.Stderr, T(lang, "warn.arrow_plain", code))
+			return plain, "", false
+		}
+		if i == 0 {
+			// "tr -> en" with the text coming from stdin.
+			return "", c, true
+		}
+		// The content is the first argument; the rest is ignored.
+		return strings.TrimSpace(args[0]), c, true
 	}
-	code, recognized := normalizeLangArg(match[2])
-	if !recognized {
-		fmt.Fprintln(os.Stderr, T(lang, "warn.arrow_plain", match[2]))
-		return joined, "", false
-	}
-	return match[1], code, true
+	return plain, "", false
+}
+
+// isArrowArgument reports whether an argument carries the arrow clause.
+func isArrowArgument(arg string) bool {
+	return arg == "->" || arg == "→" ||
+		strings.HasPrefix(arg, "->") || strings.HasPrefix(arg, "→")
 }
 
 // isPlainArgument reports whether an argument is a value rather than a flag or
@@ -412,6 +453,8 @@ func printHelp(lang string) {
 	fmt.Println(T(lang, "help.langs_line2"))
 	fmt.Println(T(lang, "help.langs_note"))
 	fmt.Println(T(lang, "help.langs_once"))
+	fmt.Println(T(lang, "help.arrow_args"))
+	fmt.Println(T(lang, "help.long_text"))
 	fmt.Println()
 	fmt.Println(T(lang, "help.backend_title"))
 	fmt.Println(T(lang, "help.backend_ai"))

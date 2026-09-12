@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -108,7 +109,128 @@ func translateWithAI(cfg Config, text, source, target, lang string) (string, err
 	if translation == "" {
 		return "", fmt.Errorf("%s", T(lang, "ai.empty"))
 	}
+	// A reply cut off at max_tokens is an incomplete translation: report it
+	// instead of silently returning half a sentence.
+	if out.Choices[0].FinishReason == "length" {
+		return "", fmt.Errorf("%s", T(lang, "ai.truncated"))
+	}
 	return translation, nil
+}
+
+// aiRequestChars is the largest amount of source text sent in one request.
+// Longer input is split at natural boundaries first: this keeps every request
+// comfortably inside the model's context window (which is what produces a
+// "maximum context length" error) and avoids truncated replies.
+const aiRequestChars = 1500
+
+// translateTextViaAI translates one piece of text, splitting long input into
+// several requests when needed. The parts are joined with newlines, which is
+// only visible for input that was too long to send as a whole anyway.
+func translateTextViaAI(cfg Config, text, source, target, lang string) (string, error) {
+	if len([]rune(text)) <= aiRequestChars {
+		return translateWithAI(cfg, text, source, target, lang)
+	}
+
+	chunks := splitLongText(text, aiRequestChars)
+	parts := make([]string, 0, len(chunks))
+	for i, chunk := range chunks {
+		if len(chunks) > 1 && isStderrTerminal() {
+			fmt.Fprintf(os.Stderr, "\r%s", T(lang, "ai.progress", i+1, len(chunks)))
+		}
+		part, err := translateWithAI(cfg, chunk, source, target, lang)
+		if err != nil {
+			if isStderrTerminal() {
+				fmt.Fprint(os.Stderr, "\r\033[K")
+			}
+			return "", err
+		}
+		parts = append(parts, part)
+	}
+	if len(chunks) > 1 && isStderrTerminal() {
+		fmt.Fprint(os.Stderr, "\r\033[K")
+	}
+	return strings.Join(parts, "\n"), nil
+}
+
+// splitLongText breaks long text into chunks no larger than maxChars, cutting
+// at paragraph, line and sentence boundaries before falling back to a hard cut.
+func splitLongText(text string, maxChars int) []string {
+	if maxChars < 1 {
+		maxChars = 1
+	}
+	var chunks []string
+	var cur strings.Builder
+	curLen := 0
+
+	flush := func() {
+		if cur.Len() > 0 {
+			chunks = append(chunks, cur.String())
+			cur.Reset()
+			curLen = 0
+		}
+	}
+
+	for _, unit := range splitTextUnits(text) {
+		unitLen := len([]rune(unit))
+		if unitLen > maxChars {
+			flush()
+			for _, piece := range hardSplitRunes(unit, maxChars) {
+				chunks = append(chunks, piece)
+			}
+			continue
+		}
+		if curLen > 0 && curLen+unitLen > maxChars {
+			flush()
+		}
+		cur.WriteString(unit)
+		curLen += unitLen
+	}
+	flush()
+	return chunks
+}
+
+// splitTextUnits splits text into sentence-sized units, keeping separators.
+func splitTextUnits(s string) []string {
+	var units []string
+	start := 0
+	for i, r := range s {
+		if !isTextBoundary(r) {
+			continue
+		}
+		units = append(units, s[start:i+len(string(r))])
+		start = i + len(string(r))
+	}
+	if start < len(s) {
+		units = append(units, s[start:])
+	}
+	return units
+}
+
+// isTextBoundary reports whether a rune is a natural place to break a long text.
+func isTextBoundary(r rune) bool {
+	switch r {
+	case '\n', '.', '!', '?', ';', ':':
+		return true
+	// Full-width CJK punctuation: 。 ! ? ; :
+	case 0x3002, 0xFF01, 0xFF1F, 0xFF1B, 0xFF1A:
+		return true
+	}
+	return false
+}
+
+// hardSplitRunes cuts a string into fixed-size rune chunks.
+func hardSplitRunes(s string, maxChars int) []string {
+	runes := []rune(s)
+	var out []string
+	for len(runes) > 0 {
+		n := maxChars
+		if n > len(runes) {
+			n = len(runes)
+		}
+		out = append(out, string(runes[:n]))
+		runes = runes[n:]
+	}
+	return out
 }
 
 // buildAIRequest assembles a minimal chat request for one translation.

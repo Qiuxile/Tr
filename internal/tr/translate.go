@@ -79,7 +79,7 @@ func Translate(cfg Config, opts Options, cache *Cache, text, target string) (Tra
 		if !cfg.HasAI() {
 			return TranslateResult{}, ErrNoAIKey
 		}
-		result, err := translateWithAI(cfg, text, source, target, lang)
+		result, err := translateTextViaAI(cfg, text, source, target, lang)
 		if err != nil {
 			return TranslateResult{}, fmt.Errorf("%w: %v", ErrAIFailed, err)
 		}

@@ -1,7 +1,7 @@
 ; setup.iss
 [Setup]
 AppName=Tr
-AppVersion=2.0.0
+AppVersion=2.1.0
 DefaultDirName={pf}\Tr
 DefaultGroupName=Tr
 UninstallDisplayIcon={app}\Tr.exe
@@ -9,11 +9,11 @@ Compression=lzma2
 SolidCompression=yes
 PrivilegesRequired=admin
 ChangesEnvironment=yes
-OutputBaseFilename=Tr_v2.0.0_Setup
+OutputBaseFilename=Tr_v2.1.0_Setup
 SetupIconFile=/assets/Tr.ico
 
 [Files]
-Source: "/bin/Tr.exe"; DestDir: "{app}"
+Source: "/Output/Tr.exe"; DestDir: "{app}"
 
 [Icons]
 Name: "{group}\Tr"; Filename: "{app}\Tr.exe"

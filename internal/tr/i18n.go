@@ -131,6 +131,8 @@ var zhMessages = map[string]string{
 	"help.langs_line2": "  it=意大利语 pt=葡萄牙语 ar=阿拉伯语 th=泰语 vi=越南语 hi=印地语 el=希腊语 nl=荷兰语",
 	"help.langs_note":  "  也支持别名(英文 / 中文 / 日本語 / korean / russian …)与任意 ISO 639-1 代码",
 	"help.langs_once":  "  -> <语言> 只作用于本次执行,不会写入配置文件;持久修改请用 tr config set target_lang",
+	"help.arrow_args":  "  箭头模式只取第一个参数作为内容(含空格请加引号),其余参数一律忽略",
+	"help.long_text":   "  原文超过约 1500 字符会自动分块翻译,避免超出模型上下文限制",
 
 	"help.backend_title":   "翻译后端:",
 	"help.backend_ai":      "  - AI (OpenAI 兼容, 必填 api_key; 默认 DeepSeek)",
@@ -181,6 +183,8 @@ var zhMessages = map[string]string{
 	"ai.no_balance": "AI 账户余额不足 (HTTP %d): %s",
 	"ai.rate_limit": "AI 请求被限流 (HTTP %d): %s",
 	"ai.status":     "AI 返回状态码 %d: %s",
+	"ai.truncated":  "AI 输出被长度上限截断(译文不完整)。输入过长时请分段翻译,或用 tr -f <文件>",
+	"ai.progress":   "长文本分块翻译中 %d/%d …",
 
 	// TUI
 	"tui.placeholder":   "输入要翻译的文本,Ctrl+T 翻译...",
@@ -303,6 +307,8 @@ var enMessages = map[string]string{
 	"help.langs_line2": "  it=Italian pt=Portuguese ar=Arabic th=Thai vi=Vietnamese hi=Hindi el=Greek nl=Dutch",
 	"help.langs_note":  "  Aliases (英文 / 中文 / 日本語 / korean / russian ...) and any ISO 639-1 code also work",
 	"help.langs_once":  "  -> <lang> applies to this invocation only and never writes the config file (use tr config set target_lang to persist)",
+	"help.arrow_args":  "  Arrow mode uses the first argument as the content (quote it if it has spaces); other arguments are ignored",
+	"help.long_text":   "  Text over ~1500 characters is translated in chunks to stay inside the model context window",
 
 	"help.backend_title":   "Backends:",
 	"help.backend_ai":      "  - AI (OpenAI-compatible, api_key required; DeepSeek by default)",
@@ -353,6 +359,8 @@ var enMessages = map[string]string{
 	"ai.no_balance": "AI account has insufficient balance (HTTP %d): %s",
 	"ai.rate_limit": "AI request rate limited (HTTP %d): %s",
 	"ai.status":     "AI returned status %d: %s",
+	"ai.truncated":  "The AI reply was cut off at the length limit (incomplete translation). Split long input, or use tr -f <file>",
+	"ai.progress":   "Translating long text in chunks %d/%d …",
 
 	// TUI
 	"tui.placeholder":   "Enter text to translate, then press Ctrl+T...",
@@ -475,6 +483,8 @@ var jaMessages = map[string]string{
 	"help.langs_line2": "  it=イタリア語 pt=ポルトガル語 ar=アラビア語 th=タイ語 vi=ベトナム語 hi=ヒンディー語 el=ギリシャ語 nl=オランダ語",
 	"help.langs_note":  "  別名(英文 / 中文 / 日本語 / korean / russian …)と任意の ISO 639-1 コードも使用できます",
 	"help.langs_once":  "  -> <言語> は今回の実行にのみ有効で、設定ファイルは変更しません(永続化は tr config set target_lang)",
+	"help.arrow_args":  "  矢印構文は最初の引数のみを内容として扱います(空白を含む場合は引用符で括る)。他の引数は無視されます",
+	"help.long_text":   "  約1500文字を超える原文は自動的に分割して翻訳します(モデルのコンテキスト上限対策)",
 
 	"help.backend_title":   "バックエンド:",
 	"help.backend_ai":      "  - AI (OpenAI 互換, api_key 必須; 既定は DeepSeek)",
@@ -525,6 +535,8 @@ var jaMessages = map[string]string{
 	"ai.no_balance": "AI アカウントの残高が不足しています (HTTP %d): %s",
 	"ai.rate_limit": "AI リクエストがレート制限されました (HTTP %d): %s",
 	"ai.status":     "AI がステータス %d を返しました: %s",
+	"ai.truncated":  "AI の出力が長さ制限で打ち切られました (翻訳が不完全)。長い入力は分割するか tr -f <ファイル> を使用してください",
+	"ai.progress":   "長文を分割して翻訳中 %d/%d …",
 
 	// TUI
 	"tui.placeholder":   "翻訳するテキストを入力し、Ctrl+T で翻訳...",

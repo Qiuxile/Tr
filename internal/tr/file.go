@@ -9,24 +9,6 @@ import (
 	"golang.org/x/term"
 )
 
-// Block sizes for file translation: the soft upper bound on how much text goes
-// into one request. Bigger blocks save prompt overhead; smaller blocks keep the
-// line structure reliable. The free APIs cap how much text a single request may
-// carry, so they get a smaller budget instead of a failed request followed by a
-// line-by-line fallback.
-const (
-	fileBlockCharsAI   = 1500
-	fileBlockCharsFree = 400
-)
-
-// blockChars returns the per-request text budget for the configured backend.
-func blockChars(cfg Config) int {
-	if cfg.HasAI() {
-		return fileBlockCharsAI
-	}
-	return fileBlockCharsFree
-}
-
 // fileBlock is a half-open range of line indexes.
 type fileBlock struct {
 	start int // inclusive
@@ -63,7 +45,7 @@ func TranslateFile(cfg Config, opts Options, cache *Cache, inPath, outPath, targ
 	outLines := make([]string, len(lines))
 	copy(outLines, lines)
 
-	blocks := splitBlocks(lines, blockChars(cfg))
+	blocks := splitBlocks(lines, aiRequestChars)
 	failed := 0
 	var firstErr error
 	progress := isStderrTerminal()
