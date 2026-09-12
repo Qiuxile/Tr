@@ -71,6 +71,37 @@ var langAliases = map[string]string{
 	"vi": "vi", "vie": "vi", "vietnamese": "vi", "tiếng việt": "vi", "越南语": "vi", "越": "vi",
 }
 
+// commonLangCodes is the ordered list of languages offered by the TUI picker
+// (and listed in the help output), roughly sorted by how often they are used.
+var commonLangCodes = []string{
+	"zh", "en", "ja", "ko", "ru", "fr", "de", "es", "it", "pt",
+	"ar", "th", "vi", "hi", "el", "nl", "pl", "tr", "uk", "id",
+}
+
+// nextCommonLang returns the neighbouring language code in the picker list,
+// wrapping around at both ends. A current value outside the list (a custom code
+// configured by the user) enters the list from the matching end.
+func nextCommonLang(current string, delta int) string {
+	if len(commonLangCodes) == 0 {
+		return current
+	}
+	idx := -1
+	for i, code := range commonLangCodes {
+		if code == current {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		if delta < 0 {
+			return commonLangCodes[len(commonLangCodes)-1]
+		}
+		return commonLangCodes[0]
+	}
+	n := len(commonLangCodes)
+	return commonLangCodes[((idx+delta)%n+n)%n]
+}
+
 // normalizeLangArg canonicalizes a user-supplied language argument
 // (code or human-friendly name) to an ISO 639-1 code. Returns
 // ("", false) when the argument is not recognized.
