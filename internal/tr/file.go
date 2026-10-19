@@ -5,9 +5,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/term"
 )
+
+// maxFileBytes bounds a single translation job so a huge or accidental binary
+// file cannot exhaust memory (or a user's API budget).
+const maxFileBytes = 16 << 20 // 16 MiB
 
 // fileBlock is a half-open range of line indexes.
 type fileBlock struct {
@@ -29,12 +34,28 @@ type fileBlock struct {
 // per-call language overrides all apply.
 func TranslateFile(cfg Config, opts Options, cache *Cache, inPath, outPath, target string) error {
 	lang := cfg.UILang
+	// File translation must keep indentation and leading/trailing whitespace.
+	opts.PreserveWhitespace = true
 
+	info, statErr := os.Stat(inPath)
+	if statErr == nil && info.Size() > maxFileBytes {
+		return fmt.Errorf("%s", T(lang, "err.file_too_large", maxFileBytes/1024/1024))
+	}
 	raw, err := os.ReadFile(inPath)
 	if err != nil {
 		return fmt.Errorf("%s", T(lang, "err.file_read", err))
 	}
+	if len(raw) > maxFileBytes {
+		return fmt.Errorf("%s", T(lang, "err.file_too_large", maxFileBytes/1024/1024))
+	}
+
 	text, hadBOM := stripBOM(string(raw))
+	if !utf8.ValidString(text) {
+		return fmt.Errorf("%s", T(lang, "err.file_encoding"))
+	}
+	if strings.IndexByte(text, 0) >= 0 {
+		return fmt.Errorf("%s", T(lang, "err.file_binary"))
+	}
 	if strings.TrimSpace(text) == "" {
 		return ErrEmptyInput
 	}
@@ -56,6 +77,15 @@ func TranslateFile(cfg Config, opts Options, cache *Cache, inPath, outPath, targ
 		}
 		translated, err := translateLineBlock(cfg, opts, cache, lines[b.start:b.end], target)
 		if err != nil {
+			// Authentication, rate-limit, network and empty-input errors will
+			// fail for every following block too. Stop instead of multiplying
+			// requests (which is especially harmful under rate limiting).
+			if isFatalTranslationError(err) {
+				if progress && len(blocks) > 1 {
+					fmt.Fprint(os.Stderr, "\r\033[K")
+				}
+				return err
+			}
 			failed++
 			if firstErr == nil {
 				firstErr = err
@@ -68,11 +98,11 @@ func TranslateFile(cfg Config, opts Options, cache *Cache, inPath, outPath, targ
 		fmt.Fprint(os.Stderr, "\r\033[K")
 	}
 
-	if failed == len(blocks) {
-		return firstErr
-	}
-	if failed > 0 {
-		fmt.Fprintln(os.Stderr, T(lang, "file.partial", failed, len(blocks)))
+	if len(blocks) > 0 && failed == len(blocks) {
+		if firstErr != nil {
+			return firstErr
+		}
+		return fmt.Errorf("%s", T(lang, "file.partial", failed, len(blocks)))
 	}
 
 	out := strings.Join(outLines, "\n")
@@ -84,7 +114,13 @@ func TranslateFile(cfg Config, opts Options, cache *Cache, inPath, outPath, targ
 	}
 
 	if strings.TrimSpace(outPath) == "" {
-		fmt.Println(out)
+		fmt.Print(out)
+		if !strings.HasSuffix(out, "\n") {
+			fmt.Println()
+		}
+		if failed > 0 {
+			return fmt.Errorf("%s", T(lang, "file.partial", failed, len(blocks)))
+		}
 		return nil
 	}
 
@@ -92,23 +128,21 @@ func TranslateFile(cfg Config, opts Options, cache *Cache, inPath, outPath, targ
 	if err != nil {
 		return fmt.Errorf("%s", T(lang, "err.file_write", err))
 	}
-	if dir := filepath.Dir(dest); dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			return fmt.Errorf("%s", T(lang, "err.file_write", err))
-		}
-	}
-	if err := os.WriteFile(dest, []byte(out), 0644); err != nil {
+	if err := writeFileAtomic(dest, []byte(out), 0o644); err != nil {
 		return fmt.Errorf("%s", T(lang, "err.file_write", err))
 	}
 	fmt.Fprintln(os.Stderr, T(lang, "file.written", dest))
+	if failed > 0 {
+		return fmt.Errorf("%s", T(lang, "file.partial", failed, len(blocks)))
+	}
 	return nil
 }
 
 // translateLineBlock translates one block of lines, keeping the line count
 // intact. It first sends the whole block in a single request; if the reply does
-// not preserve the line structure — or simply echoes the input back, which the
-// free backends do for some multi-line requests — it falls back to translating
-// line by line.
+// not preserve the line structure -- or simply echoes the input back -- it
+// falls back to translating line by line. Genuine API/network failures are not
+// retried per line: they would just multiply the failure and the cost.
 func translateLineBlock(cfg Config, opts Options, cache *Cache, lines []string, target string) ([]string, error) {
 	if len(lines) == 1 {
 		return translateLinesIndividually(cfg, opts, cache, lines, target)
@@ -121,6 +155,9 @@ func translateLineBlock(cfg Config, opts Options, cache *Cache, lines []string, 
 		if len(translated) == len(lines) && strings.Join(translated, "\n") != blockText {
 			return alignBlankLines(lines, translated), nil
 		}
+	}
+	if err != nil && isFatalTranslationError(err) {
+		return nil, err
 	}
 	return translateLinesIndividually(cfg, opts, cache, lines, target)
 }
@@ -138,6 +175,9 @@ func translateLinesIndividually(cfg Config, opts Options, cache *Cache, lines []
 		}
 		res, err := Translate(cfg, opts, cache, line, target)
 		if err != nil {
+			if isFatalTranslationError(err) {
+				return out, err
+			}
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -175,25 +215,31 @@ func allLinesUnchanged(source, out []string) bool {
 // splitBlocks groups lines into blocks of at most maxChars characters. Blank
 // lines carry paragraph structure rather than content, so they never start or
 // split a block; they travel inside one.
+//
+// The end of a block is the last non-blank line, not len(lines): trailing blank
+// lines must stay outside the request. Otherwise the model's reply legitimately
+// has fewer lines than the block and tr wastes the request on a per-line
+// fallback.
 func splitBlocks(lines []string, maxChars int) []fileBlock {
 	var blocks []fileBlock
-	start, size := -1, 0
+	start, size, last := -1, 0, -1
 
 	for i, line := range lines {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
 		if start < 0 {
-			start, size = i, 0
+			start, size, last = i, 0, -1
 		}
 		size += len([]rune(line)) + 1
+		last = i
 		if size >= maxChars {
-			blocks = append(blocks, fileBlock{start: start, end: i + 1})
-			start, size = -1, 0
+			blocks = append(blocks, fileBlock{start: start, end: last + 1})
+			start, size, last = -1, 0, -1
 		}
 	}
 	if start >= 0 {
-		blocks = append(blocks, fileBlock{start: start, end: len(lines)})
+		blocks = append(blocks, fileBlock{start: start, end: last + 1})
 	}
 	return blocks
 }
@@ -203,7 +249,7 @@ func splitBlocks(lines []string, maxChars int) []fileBlock {
 // after the source file; anything else is treated as the target file path.
 func resolveOutputPath(inPath, out string) (string, error) {
 	if isDirLike(out) {
-		if err := os.MkdirAll(out, 0755); err != nil {
+		if err := os.MkdirAll(out, 0o755); err != nil {
 			return "", err
 		}
 		return filepath.Join(out, filepath.Base(inPath)), nil

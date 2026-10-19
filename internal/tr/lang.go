@@ -40,7 +40,8 @@ var iso639_1 = map[string]bool{
 // syntax accepts things like "tr 你好 -> 英文" or "tr hello -> 日本語".
 var langAliases = map[string]string{
 	// codes with regional variants
-	"zh-cn": "zh", "zh-tw": "zh", "zh-hk": "zh", "zh-sg": "zh", "zh-hans": "zh", "zh-hant": "zh",
+	"zh-cn": "zh", "zh-sg": "zh", "zh-hans": "zh",
+	"zh-tw": "zh-hant", "zh-hk": "zh-hant", "zh-hant": "zh-hant", "繁體": "zh-hant", "繁体": "zh-hant",
 	// English
 	"en": "en", "english": "en", "英文": "en", "英": "en",
 	// Chinese
@@ -74,7 +75,7 @@ var langAliases = map[string]string{
 // commonLangCodes is the ordered list of languages offered by the TUI picker
 // (and listed in the help output), roughly sorted by how often they are used.
 var commonLangCodes = []string{
-	"zh", "en", "ja", "ko", "ru", "fr", "de", "es", "it", "pt",
+	"zh", "zh-hant", "en", "ja", "ko", "ru", "fr", "de", "es", "it", "pt",
 	"ar", "th", "vi", "hi", "el", "nl", "pl", "tr", "uk", "id",
 }
 
@@ -147,12 +148,24 @@ func DetectLang(text string) string {
 		return "ja"
 	}
 
+	// Use a fixed order instead of ranging over a map: equal counts must not
+	// produce a random language from run to run.
+	candidates := []struct {
+		code string
+		n    int
+	}{
+		{"zh", han},
+		{"ko", hangul},
+		{"ru", cyr},
+		{"ar", arab},
+		{"el", greek},
+		{"th", thai},
+		{"hi", deva},
+	}
 	best, bestN := "en", 0
-	for code, n := range map[string]int{
-		"zh": han, "ko": hangul, "ru": cyr, "ar": arab, "el": greek, "th": thai, "hi": deva,
-	} {
-		if n > bestN {
-			best, bestN = code, n
+	for _, c := range candidates {
+		if c.n > bestN {
+			best, bestN = c.code, c.n
 		}
 	}
 	return best

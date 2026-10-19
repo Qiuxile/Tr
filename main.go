@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"Tr/internal/tr"
+	"github.com/Qiuxile/Tr/internal/tr"
 )
 
 func main() {

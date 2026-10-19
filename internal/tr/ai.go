@@ -2,21 +2,42 @@ package tr
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 // aiHTTPClient is dedicated to AI requests: language models can take longer
 // than plain dictionary APIs, so it gets a more generous timeout.
 var aiHTTPClient = &http.Client{
-	Timeout: 60 * time.Second,
+	Timeout: 45 * time.Second,
 }
+
+// Pollinations' anonymous free tier allows roughly one reply every 30
+// seconds. Pacing client-side keeps a long file translation from turning into
+// a series of 402/429 responses.
+const keylessMinInterval = 30 * time.Second
+
+var (
+	keylessMu   sync.Mutex
+	keylessLast time.Time
+)
+
+// Retry policy for transient failures. Translation is idempotent, so a bounded
+// retry is safe; authentication and balance errors are never retried.
+const (
+	aiMaxRetries = 2
+	aiRetryBase  = 500 * time.Millisecond
+)
 
 // aiMessage is a single chat message.
 type aiMessage struct {
@@ -32,11 +53,13 @@ type aiThinking struct {
 // aiChatRequest is an OpenAI-compatible chat completion request. Only the
 // fields we actually need are sent, which keeps every request small.
 type aiChatRequest struct {
-	Model     string      `json:"model"`
-	Messages  []aiMessage `json:"messages"`
-	MaxTokens int         `json:"max_tokens,omitempty"`
-	Stream    bool        `json:"stream"`
-	Thinking  *aiThinking `json:"thinking,omitempty"`
+	Model           string      `json:"model"`
+	Messages        []aiMessage `json:"messages"`
+	MaxTokens       int         `json:"max_tokens,omitempty"`
+	Temperature     float64     `json:"temperature"`
+	Stream          bool        `json:"stream"`
+	Thinking        *aiThinking `json:"thinking,omitempty"`
+	ReasoningEffort string      `json:"reasoning_effort,omitempty"`
 }
 
 // aiChatResponse is the subset of the response we care about.
@@ -51,6 +74,11 @@ type aiChatResponse struct {
 		Message string `json:"message"`
 		Type    string `json:"type"`
 	} `json:"error"`
+	Usage *struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+		TotalTokens      int `json:"total_tokens"`
+	} `json:"usage"`
 }
 
 // Prefixes/models like to add even when told to output only the translation.
@@ -63,58 +91,193 @@ var (
 //
 // Token thrift: one request per translation with a one-line system prompt, no
 // few-shot examples, no conversation history, a reply-length cap derived from
-// the input, and no automatic retries.
-func translateWithAI(cfg Config, text, source, target, lang string) (string, error) {
+// the input, and no reasoning unless explicitly enabled.
+func translateWithAI(ctx context.Context, cfg Config, text, source, target, lang string, preserveWhitespace bool) (string, error) {
 	payload, err := json.Marshal(buildAIRequest(cfg, text, source, target))
 	if err != nil {
-		return "", fmt.Errorf("%s: %w", T(lang, "ai.parse"), err)
+		return "", wrapPipeline(ErrAIFailed, fmt.Sprintf("%s: %v", T(lang, "ai.parse"), err), err)
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
-	req, err := http.NewRequest(http.MethodPost, aiEndpoint(cfg.AIBaseURL), bytes.NewReader(payload))
+	var lastErr error
+	for attempt := 0; attempt <= aiMaxRetries; attempt++ {
+		if isPollinationsURL(cfg.AIBaseURL) {
+			if err := paceKeyless(ctx); err != nil {
+				return "", wrapPipeline(ErrNetworkFailed, T(lang, "err.network"), err)
+			}
+		}
+		status, header, body, err := postChat(ctx, cfg, payload)
+		if err != nil {
+			if ctx.Err() != nil {
+				return "", wrapPipeline(ErrNetworkFailed, T(lang, "err.network"), err)
+			}
+			lastErr = err
+			if attempt < aiMaxRetries {
+				if sleepErr := sleepContext(ctx, retryDelay(attempt+1)); sleepErr != nil {
+					return "", wrapPipeline(ErrNetworkFailed, T(lang, "err.network"), sleepErr)
+				}
+				continue
+			}
+			return "", wrapPipeline(ErrNetworkFailed,
+				fmt.Sprintf("%s: %v", T(lang, "err.network"), err), err)
+		}
+
+		if status == http.StatusOK {
+			return parseAIChatResponse(body, lang, preserveWhitespace)
+		}
+
+		msg := aiErrorMessage(status, body, lang)
+		if status == http.StatusPaymentRequired && isPollinationsURL(cfg.AIBaseURL) {
+			msg = T(lang, "ai.free_limit")
+		}
+		if status == http.StatusTooManyRequests && isKeylessEndpoint(cfg.AIBaseURL) {
+			msg += " " + T(lang, "ai.free_rate_limit")
+		}
+		lastErr = fmt.Errorf("%s", msg)
+		if retryableStatus(status) && attempt < aiMaxRetries {
+			delay := retryAfter(header)
+			if delay <= 0 {
+				delay = retryDelay(attempt + 1)
+			}
+			if sleepErr := sleepContext(ctx, delay); sleepErr != nil {
+				return "", wrapPipeline(ErrNetworkFailed, T(lang, "err.network"), sleepErr)
+			}
+			continue
+		}
+		return "", wrapPipeline(ErrAIFailed, msg, lastErr)
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("%s", T(lang, "ai.empty"))
+	}
+	return "", wrapPipeline(ErrAIFailed, lastErr.Error(), lastErr)
+}
+
+// postChat performs one HTTP request and returns the status, headers and body.
+func postChat(ctx context.Context, cfg Config, payload []byte) (int, http.Header, []byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, aiEndpoint(cfg.AIBaseURL), bytes.NewReader(payload))
 	if err != nil {
-		return "", fmt.Errorf("%s: %w", T(lang, "ai.request"), err)
+		return 0, nil, nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(cfg.APIKey))
+	if key := strings.TrimSpace(cfg.APIKey); key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
 
 	resp, err := aiHTTPClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("%w: %s: %w", ErrNetworkFailed, T(lang, "ai.request"), err)
+		return 0, nil, nil, err
 	}
 	defer resp.Body.Close()
 
-	// Cap the read: a translation reply is small, and a runaway response must
-	// not be pulled into memory.
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if err != nil {
-		return "", fmt.Errorf("%w: %s: %w", ErrNetworkFailed, T(lang, "ai.request"), err)
+		return 0, resp.Header, nil, err
 	}
+	return resp.StatusCode, resp.Header, body, nil
+}
 
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("%s", aiErrorMessage(resp.StatusCode, body, lang))
-	}
-
+func parseAIChatResponse(body []byte, lang string, preserveWhitespace bool) (string, error) {
 	var out aiChatResponse
 	if err := json.Unmarshal(body, &out); err != nil {
-		return "", fmt.Errorf("%s: %w", T(lang, "ai.parse"), err)
+		return "", wrapPipeline(ErrAIFailed, fmt.Sprintf("%s: %v", T(lang, "ai.parse"), err), err)
 	}
 	if out.Error != nil && out.Error.Message != "" {
-		return "", fmt.Errorf("%s", out.Error.Message)
+		return "", wrapPipeline(ErrAIFailed, out.Error.Message, nil)
 	}
 	if len(out.Choices) == 0 {
-		return "", fmt.Errorf("%s", T(lang, "ai.empty"))
+		return "", wrapPipeline(ErrAIFailed, T(lang, "ai.empty"), nil)
 	}
 
-	translation := cleanAITranslation(out.Choices[0].Message.Content)
+	translation := cleanAITranslation(out.Choices[0].Message.Content, preserveWhitespace)
 	if translation == "" {
-		return "", fmt.Errorf("%s", T(lang, "ai.empty"))
+		return "", wrapPipeline(ErrAIFailed, T(lang, "ai.empty"), nil)
 	}
 	// A reply cut off at max_tokens is an incomplete translation: report it
 	// instead of silently returning half a sentence.
 	if out.Choices[0].FinishReason == "length" {
-		return "", fmt.Errorf("%s", T(lang, "ai.truncated"))
+		return "", wrapPipeline(ErrAIFailed, T(lang, "ai.truncated"), nil)
 	}
 	return translation, nil
+}
+
+func retryableStatus(status int) bool {
+	switch status {
+	case http.StatusTooManyRequests,
+		http.StatusInternalServerError,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return true
+	}
+	return false
+}
+
+func retryDelay(attempt int) time.Duration {
+	return time.Duration(attempt) * aiRetryBase
+}
+
+// retryAfter honours a Retry-After header (seconds or HTTP date) and caps it
+// so a misbehaving server cannot stall the CLI indefinitely.
+func retryAfter(header http.Header) time.Duration {
+	if header == nil {
+		return 0
+	}
+	v := strings.TrimSpace(header.Get("Retry-After"))
+	if v == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(v); err == nil && seconds > 0 {
+		d := time.Duration(seconds) * time.Second
+		if d > 10*time.Second {
+			d = 10 * time.Second
+		}
+		return d
+	}
+	if when, err := http.ParseTime(v); err == nil {
+		d := time.Until(when)
+		if d < 0 {
+			return 0
+		}
+		if d > 10*time.Second {
+			d = 10 * time.Second
+		}
+		return d
+	}
+	return 0
+}
+
+func sleepContext(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// paceKeyless enforces a minimum interval between anonymous Pollinations
+// requests. The free tier queues aggressively; without pacing a file
+// translation would spend most of its time in 45-second timeouts.
+func paceKeyless(ctx context.Context) error {
+	keylessMu.Lock()
+	wait := keylessMinInterval - time.Since(keylessLast)
+	keylessMu.Unlock()
+	if wait > 0 {
+		if err := sleepContext(ctx, wait); err != nil {
+			return err
+		}
+	}
+	keylessMu.Lock()
+	keylessLast = time.Now()
+	keylessMu.Unlock()
+	return nil
 }
 
 // aiRequestChars is the largest amount of source text sent in one request.
@@ -124,32 +287,43 @@ func translateWithAI(cfg Config, text, source, target, lang string) (string, err
 const aiRequestChars = 1500
 
 // translateTextViaAI translates one piece of text, splitting long input into
-// several requests when needed. The parts are joined with newlines, which is
-// only visible for input that was too long to send as a whole anyway.
-func translateTextViaAI(cfg Config, text, source, target, lang string) (string, error) {
+// several requests when needed. Chunks are cached individually so editing one
+// paragraph does not force every chunk to be paid for again. Chunks are joined
+// without adding separators: splitLongText keeps the original punctuation and
+// newlines.
+//
+// The second return value reports whether every chunk came from the cache.
+func translateTextViaAI(cfg Config, cache *Cache, scope, text, source, target, lang string, opts Options) (string, bool, error) {
 	if len([]rune(text)) <= aiRequestChars {
-		return translateWithAI(cfg, text, source, target, lang)
+		result, err := translateWithAI(opts.context(), cfg, text, source, target, lang, opts.PreserveWhitespace)
+		return result, false, err
 	}
 
 	chunks := splitLongText(text, aiRequestChars)
-	parts := make([]string, 0, len(chunks))
+	parts := make([]string, len(chunks))
+	allCached := cache != nil
+
 	for i, chunk := range chunks {
-		if len(chunks) > 1 && isStderrTerminal() {
-			fmt.Fprintf(os.Stderr, "\r%s", T(lang, "ai.progress", i+1, len(chunks)))
+		if opts.Progress != nil {
+			opts.Progress(i+1, len(chunks))
 		}
-		part, err := translateWithAI(cfg, chunk, source, target, lang)
-		if err != nil {
-			if isStderrTerminal() {
-				fmt.Fprint(os.Stderr, "\r\033[K")
+		if cache != nil {
+			if cached, ok := cache.Get(scope, source, target, chunk); ok {
+				parts[i] = cached
+				continue
 			}
-			return "", err
 		}
-		parts = append(parts, part)
+		allCached = false
+		part, err := translateWithAI(opts.context(), cfg, chunk, source, target, lang, opts.PreserveWhitespace)
+		if err != nil {
+			return "", false, err
+		}
+		parts[i] = part
+		if cache != nil {
+			cache.Put(scope, source, target, chunk, part)
+		}
 	}
-	if len(chunks) > 1 && isStderrTerminal() {
-		fmt.Fprint(os.Stderr, "\r\033[K")
-	}
-	return strings.Join(parts, "\n"), nil
+	return strings.Join(parts, ""), allCached, nil
 }
 
 // splitLongText breaks long text into chunks no larger than maxChars, cutting
@@ -245,8 +419,9 @@ func buildAIRequest(cfg Config, text, source, target string) aiChatRequest {
 			{Role: "system", Content: aiSystemPrompt(source, target)},
 			{Role: "user", Content: text},
 		},
-		MaxTokens: estimateMaxTokens(text),
-		Stream:    false,
+		MaxTokens:   estimateMaxTokens(text),
+		Temperature: 0,
+		Stream:      false,
 	}
 	// Reasoning models spend a large amount of tokens thinking about what is
 	// a lookup task. Say so explicitly for the backend that supports it.
@@ -256,6 +431,11 @@ func buildAIRequest(cfg Config, text, source, target string) aiChatRequest {
 		} else {
 			req.Thinking = &aiThinking{Type: "disabled"}
 		}
+	}
+	// Zhipu GLM-5.3/5.3-Flash force thinking on; reasoning_effort=low keeps the
+	// per-translation reasoning budget small.
+	if isZhipuEndpoint(cfg.AIBaseURL) && strings.HasPrefix(strings.ToLower(model), "glm-5.") {
+		req.ReasoningEffort = "low"
 	}
 	return req
 }
@@ -286,14 +466,42 @@ func estimateMaxTokens(text string) int {
 
 // cleanAITranslation removes formatting the model may have added despite the
 // instruction, so the cached value is the bare translation.
-func cleanAITranslation(s string) string {
-	s = strings.TrimSpace(s)
+func cleanAITranslation(s string, preserveWhitespace bool) string {
+	s = stripANSI(s)
+	s = stripControlChars(s)
+	if preserveWhitespace {
+		// Keep indentation for file translation; only drop model-added blank
+		// lines at the very edges.
+		s = strings.Trim(s, "\r\n")
+	} else {
+		s = strings.TrimSpace(s)
+	}
 	if strings.Contains(s, "```") {
 		s = aiFenceRe.ReplaceAllString(s, "")
 	}
 	s = aiPrefixRe.ReplaceAllString(s, "")
-	s = strings.TrimSpace(s)
+	if !preserveWhitespace {
+		s = strings.TrimSpace(s)
+	}
 	return trimWrappingQuotes(s)
+}
+
+// stripControlChars removes escape sequences and control bytes that could
+// corrupt the terminal. Newlines and tabs are preserved.
+func stripControlChars(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch r {
+		case '\n', '\t', '\r':
+			b.WriteRune(r)
+		default:
+			if r >= 0x20 && r != 0x7f {
+				b.WriteRune(r)
+			}
+		}
+	}
+	return b.String()
 }
 
 // trimWrappingQuotes drops a symmetric pair of quotes around the whole text,
@@ -316,8 +524,8 @@ func trimWrappingQuotes(s string) string {
 }
 
 // aiEndpoint normalizes a base URL into a chat completions endpoint. A full
-// endpoint can be configured as-is; otherwise "/v1/chat/completions" (or just
-// "/chat/completions" for a base that already ends in "/v1") is appended.
+// endpoint can be configured as-is; otherwise the appropriate suffix is
+// appended. Versioned bases such as /v1 or /api/paas/v4 are handled generically.
 func aiEndpoint(base string) string {
 	base = strings.TrimSpace(base)
 	if base == "" {
@@ -327,15 +535,72 @@ func aiEndpoint(base string) string {
 	switch {
 	case strings.HasSuffix(base, "/chat/completions"):
 		return base
-	case strings.HasSuffix(base, "/v1"):
+	case strings.HasSuffix(base, "/openai"):
+		return base
+	case isVersionedBase(base):
 		return base + "/chat/completions"
-	default:
-		return base + "/v1/chat/completions"
 	}
+	if isPollinationsURL(base) {
+		return base + "/openai"
+	}
+	return base + "/v1/chat/completions"
 }
 
-// isDeepSeekEndpoint reports whether the backend is DeepSeek, the only one of
-// the two known backends that takes a "thinking" switch.
+// isVersionedBase reports whether the URL path ends in a version segment such
+// as /v1, /v4, or /api/paas/v4.
+func isVersionedBase(base string) bool {
+	u, err := url.Parse(base)
+	if err != nil {
+		return false
+	}
+	path := strings.TrimRight(u.Path, "/")
+	idx := strings.LastIndexByte(path, '/')
+	if idx < 0 {
+		return false
+	}
+	last := path[idx+1:]
+	if len(last) < 2 || last[0] != 'v' {
+		return false
+	}
+	for _, r := range last[1:] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func isPollinationsURL(base string) bool {
+	u, err := url.Parse(strings.TrimSpace(base))
+	if err != nil {
+		return strings.Contains(strings.ToLower(base), "pollinations")
+	}
+	return strings.Contains(strings.ToLower(u.Hostname()), "pollinations.ai")
+}
+
+// isZhipuEndpoint reports whether the backend is Zhipu BigModel/GLM.
+func isZhipuEndpoint(base string) bool {
+	u, err := url.Parse(strings.TrimSpace(base))
+	if err != nil {
+		return strings.Contains(strings.ToLower(base), "bigmodel.cn")
+	}
+	return strings.Contains(strings.ToLower(u.Hostname()), "bigmodel.cn")
+}
+
+// isKeylessEndpoint reports whether the endpoint works without an API key.
+// Local model servers and the Pollinations playground are supported.
+func isKeylessEndpoint(base string) bool {
+	u, err := url.Parse(strings.TrimSpace(base))
+	if err != nil {
+		return strings.Contains(strings.ToLower(base), "pollinations")
+	}
+	host := strings.ToLower(u.Hostname())
+	return strings.Contains(host, "pollinations.ai") ||
+		host == "localhost" || host == "127.0.0.1" || host == "::1"
+}
+
+// isDeepSeekEndpoint reports whether the backend is DeepSeek, the only known
+// backend that takes a "thinking" switch.
 func isDeepSeekEndpoint(base string) bool {
 	base = strings.TrimSpace(base)
 	if base == "" {
@@ -359,9 +624,7 @@ func aiErrorMessage(status int, body []byte, lang string) string {
 	if detail == "" {
 		detail = strings.TrimSpace(string(body))
 	}
-	if len(detail) > 200 {
-		detail = detail[:200] + "…"
-	}
+	detail = truncateRunes(detail, 200)
 
 	switch status {
 	case http.StatusUnauthorized, http.StatusForbidden:
@@ -375,9 +638,18 @@ func aiErrorMessage(status int, body []byte, lang string) string {
 	}
 }
 
+func truncateRunes(s string, max int) string {
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max]) + "…"
+}
+
 // aiLangNames maps language codes to the names a model understands best.
 var aiLangNames = map[string]string{
-	"zh": "Chinese (Simplified)", "en": "English", "ja": "Japanese",
+	"zh": "Chinese (Simplified)", "zh-hant": "Chinese (Traditional)",
+	"en": "English", "ja": "Japanese",
 	"ko": "Korean", "ru": "Russian", "fr": "French", "de": "German",
 	"es": "Spanish", "it": "Italian", "pt": "Portuguese", "ar": "Arabic",
 	"th": "Thai", "hi": "Hindi", "vi": "Vietnamese", "el": "Greek",
@@ -388,7 +660,7 @@ var aiLangNames = map[string]string{
 	"bn": "Bengali", "ta": "Tamil", "ur": "Urdu", "sr": "Serbian",
 	"hr": "Croatian", "sk": "Slovak", "sl": "Slovenian", "lt": "Lithuanian",
 	"lv": "Latvian", "et": "Estonian", "ca": "Catalan", "tl": "Filipino",
-	"sw": "Swahili", "af": "Afrikaans", "fa-IR": "Persian",
+	"sw": "Swahili", "af": "Afrikaans",
 }
 
 // langDisplayName returns a human readable language name for prompts, falling
@@ -402,4 +674,18 @@ func langDisplayName(code string) string {
 		return name
 	}
 	return code
+}
+
+// stderrProgress prints chunk progress only when stderr is a terminal. The TUI
+// passes a nil callback instead: writing to stderr would corrupt its alt-screen.
+func stderrProgress(lang string) func(done, total int) {
+	if !isStderrTerminal() {
+		return nil
+	}
+	return func(done, total int) {
+		fmt.Fprintf(os.Stderr, "\r%s", T(lang, "ai.progress", done, total))
+		if done == total {
+			fmt.Fprint(os.Stderr, "\r\033[K")
+		}
+	}
 }

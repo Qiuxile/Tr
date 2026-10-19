@@ -1,4 +1,4 @@
-module Tr
+module github.com/Qiuxile/Tr
 
 go 1.26.0
 

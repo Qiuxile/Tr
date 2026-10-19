@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: true
+      - name: Format
+        if: runner.os == 'Linux'
+        run: test -z "$(gofmt -l .)"
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -race -cover ./...
+      - name: Build
+        run: go build -trimpath -ldflags "-s -w" ./...
+
+  build-cross:
+    name: Cross build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: true
+      - run: GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o /tmp/tr-linux .
+      - run: GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o /tmp/tr-darwin .
+      - run: GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o /tmp/tr.exe .

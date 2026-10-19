@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -52,6 +53,9 @@ const (
 	shellRunTimeout = 30 * time.Second
 	// shellMaxLines caps the retained scrollback.
 	shellMaxLines = 1000
+	// shellMaxBytes caps one command's captured output. Without this a
+	// runaway command could exhaust memory before the timeout fires.
+	shellMaxBytes = 1 << 20
 )
 
 // ansiRe matches colour/OSC escape sequences produced by shell commands.
@@ -66,9 +70,10 @@ type tuiTranslateMsg struct {
 
 // tuiShellDoneMsg carries the result of an asynchronous shell command.
 type tuiShellDoneMsg struct {
-	output   string
-	err      error
-	timedOut bool
+	output    string
+	err       error
+	timedOut  bool
+	truncated bool
 }
 
 // tuiModel is the bubbletea model for the interactive translation UI.
@@ -98,6 +103,7 @@ type tuiModel struct {
 	shellHist    []string // command history
 	shellHistIdx int
 	shellRunning bool
+	shellCancel  context.CancelFunc
 }
 
 // newTUIModel builds the initial model.
@@ -192,7 +198,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tuiTranslateMsg:
 		m.busy = false
 		if msg.err != nil {
-			m.errText = T(m.lang, "tui.failed", errorDetail(msg.err))
+			m.errText = T(m.lang, "tui.failed", msg.err)
 			m.srcLabel = ""
 			m.result.SetContent(lipgloss.NewStyle().Foreground(tuiErr).Render(m.errText))
 			return m, nil
@@ -205,6 +211,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tuiShellDoneMsg:
 		m.shellRunning = false
+		m.shellCancel = nil
 		m.appendShellOutput(shellResultText(m.lang, msg))
 		return m, nil
 
@@ -219,6 +226,12 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 
+	// Hints are transient: the next keystroke clears the previous one. A
+	// handler that sets a new hint does so after this line.
+	if m.mode == tuiModeNormal {
+		m.hint = ""
+	}
+
 	// Shell mode owns the keyboard until it is dismissed with Esc.
 	if m.mode == tuiModeShell {
 		switch key {
@@ -230,6 +243,9 @@ func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.closeShell()
 			return m, nil
 		case "enter":
+			if m.shellRunning {
+				return m, nil
+			}
 			line := strings.TrimSpace(m.command.Value())
 			if line == "" {
 				return m, nil
@@ -240,6 +256,13 @@ func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.shellRunning = true
 			return m, m.shellCmd(line)
 		case "ctrl+c":
+			if m.shellRunning && m.shellCancel != nil {
+				m.shellCancel()
+				m.shellRunning = false
+				m.appendShellOutput(lipgloss.NewStyle().Foreground(tuiErr).
+					Render(T(m.lang, "tui.shell_cancelled")))
+				return m, nil
+			}
 			return m, tea.Quit
 		case "ctrl+l": // clear the terminal output, like a shell's Ctrl+L
 			m.clearShellOutput()
@@ -399,26 +422,68 @@ func (m *tuiModel) closeShell() {
 
 // shellCmd runs one command line in the background.
 func (m *tuiModel) shellCmd(line string) tea.Cmd {
+	ctx, cancel := context.WithTimeout(context.Background(), shellRunTimeout)
+	m.shellCancel = cancel
 	return func() tea.Msg {
-		output, err, timedOut := runShellLine(line)
-		return tuiShellDoneMsg{output: output, err: err, timedOut: timedOut}
+		defer cancel()
+		output, err, timedOut, truncated := runShellLine(ctx, line)
+		return tuiShellDoneMsg{output: output, err: err, timedOut: timedOut, truncated: truncated}
 	}
 }
 
 // runShellLine executes a command through the platform shell and returns its
-// combined output. The command is killed after shellRunTimeout.
-func runShellLine(line string) (string, error, bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), shellRunTimeout)
-	defer cancel()
-
+// combined output. The command is killed after the context expires and the
+// captured output is bounded.
+func runShellLine(ctx context.Context, line string) (string, error, bool, bool) {
 	cmd := newShellCommand(ctx, line)
-	out, err := cmd.CombinedOutput()
-	text := normalizeShellOutput(string(out))
+	buf := &cappedBuffer{max: shellMaxBytes}
+	cmd.Stdout = buf
+	cmd.Stderr = buf
+	err := cmd.Run()
+	text := normalizeShellOutput(buf.String())
 
 	if ctx.Err() == context.DeadlineExceeded {
-		return text, nil, true
+		return text, nil, true, buf.truncated
 	}
-	return text, err, false
+	if ctx.Err() == context.Canceled {
+		// The user pressed Ctrl+C; the "command cancelled" notice is already
+		// rendered by the key handler.
+		return text, nil, false, buf.truncated
+	}
+	return text, err, false, buf.truncated
+}
+
+// cappedBuffer is an io.Writer that keeps at most max bytes of output while
+// still reporting every write as successful, so the child process is not
+// killed by a short write.
+type cappedBuffer struct {
+	mu        sync.Mutex
+	b         strings.Builder
+	max       int
+	truncated bool
+}
+
+func (c *cappedBuffer) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.b.Len() >= c.max {
+		c.truncated = true
+		return len(p), nil
+	}
+	remaining := c.max - c.b.Len()
+	if len(p) > remaining {
+		c.b.Write(p[:remaining])
+		c.truncated = true
+		return len(p), nil
+	}
+	c.b.Write(p)
+	return len(p), nil
+}
+
+func (c *cappedBuffer) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.b.String()
 }
 
 // normalizeShellOutput makes raw command output safe to render: escape
@@ -452,6 +517,10 @@ func shellResultText(lang string, msg tuiShellDoneMsg) string {
 	if strings.TrimSpace(msg.output) != "" {
 		b.WriteString(strings.TrimRight(msg.output, "\n"))
 		b.WriteString("\n")
+	}
+	if msg.truncated {
+		b.WriteString(lipgloss.NewStyle().Foreground(tuiWarn).
+			Render(T(lang, "tui.shell_truncated", shellMaxBytes/1024)) + "\n")
 	}
 	switch {
 	case msg.timedOut:
@@ -523,13 +592,14 @@ func (m *tuiModel) shellHistoryNext() {
 }
 
 // translateCmd starts an asynchronous translation. The target language is left
-// empty so the session-language pair is used.
+// empty so the session-language pair is used. Progress is deliberately not
+// written to stderr: doing so corrupts the alt-screen.
 func (m *tuiModel) translateCmd(text string) tea.Cmd {
 	cfg := m.cfg // snapshot
 	offline := m.offline
 	cache := m.cache
 	return func() tea.Msg {
-		res, err := Translate(cfg, Options{Offline: offline}, cache, text, "")
+		res, err := Translate(cfg, Options{Offline: offline, Ctx: context.Background()}, cache, text, "")
 		return tuiTranslateMsg{text: text, res: res, err: err}
 	}
 }
@@ -632,8 +702,13 @@ func runTUI(cfg Config) int {
 	m := newTUIModel(cfg, cache)
 	p := tea.NewProgram(&m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "%s\n", T(cfg.UILang, "err.translate_failed", err))
+		fmt.Fprintf(os.Stderr, "%s\n", T(cfg.UILang, "err.tui_start", err))
 		return 1
+	}
+	if cache != nil {
+		if err := cache.Flush(); err != nil {
+			fmt.Fprintf(os.Stderr, "%s\n", T(cfg.UILang, "warn.cache_save", err))
+		}
 	}
 	return 0
 }

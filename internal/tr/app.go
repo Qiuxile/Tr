@@ -1,17 +1,22 @@
 package tr
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"golang.org/x/term"
 )
 
-// Version is the application version string.
-const Version = "2.0.0"
+// Version is the application version. It is a variable so release builds can
+// inject the tag:
+//
+//	go build -ldflags "-X github.com/Qiuxile/Tr/internal/tr.Version=2.2.0"
+var Version = "2.2.0"
 
 // Mode represents the CLI dispatch mode.
 type Mode int
@@ -22,6 +27,7 @@ const (
 	ModeVersion
 	ModeAbout
 	ModeConfig
+	ModeCache
 	ModeFile
 	ModeTUI
 )
@@ -31,21 +37,23 @@ type CLIOptions struct {
 	Mode       Mode
 	Offline    bool
 	ConfigArgs []string
+	CacheArgs  []string
 	FileIn     string // -f: source file
 	FileOut    string // -f: output file or directory (optional)
 	ParseError bool   // an unknown flag or malformed argument was seen
 }
 
-// Run is the application entry point. It parses CLI arguments,
-// loads config and cache, then dispatches to the appropriate handler.
-// It returns a process exit code.
+const maxStdinBytes = 16 << 20 // 16 MiB
+
+// Run is the application entry point. It parses CLI arguments, loads config
+// and cache, then dispatches to the appropriate handler. It returns a process
+// exit code.
 func Run(args []string) int {
 	cfg, err := LoadConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s\n", T(cfg.UILang, "warn.defaults", err))
 		cfg = DefaultConfig()
 	}
-	cfg = applyEnvAIKey(cfg)
 
 	opts, remaining := parseArgs(cfg.UILang, args[1:]) // skip program name
 
@@ -66,11 +74,23 @@ func Run(args []string) int {
 		printAbout(cfg.UILang)
 		return 0
 	case ModeConfig:
+		// Config commands operate on the file only. Applying an environment
+		// key here would write that secret back to disk on an unrelated set.
 		return runConfigCommand(cfg, opts.ConfigArgs)
+	case ModeCache:
+		return runCacheCommand(cfg, opts.CacheArgs)
+	}
+
+	// From here on a runtime key may come from the environment or the
+	// built-in default.
+	cfg = applyEnvAIKey(cfg)
+	cfg = applyDefaultAIKey(cfg)
+
+	switch opts.Mode {
 	case ModeFile:
 		return runFileMode(cfg, opts, remaining)
 	case ModeTUI:
-		if !isTerminal() {
+		if !isStdinTTY() || !isStdoutTTY() {
 			fmt.Fprintf(os.Stderr, "%s\n", T(cfg.UILang, "warn.no_tty_tui"))
 			return 1
 		}
@@ -81,19 +101,22 @@ func Run(args []string) int {
 	// which auto-detects the source language and translates to <lang>.
 	text, targetCode, hasArrow := splitArrow(cfg.UILang, remaining)
 
-	text = strings.TrimSpace(text)
-	if text == "" && !isTerminal() {
+	if strings.TrimSpace(text) == "" && !isStdinTTY() {
 		// Pipe mode: take the text from stdin.
-		stdinData, readErr := io.ReadAll(os.Stdin)
+		stdinData, readErr := io.ReadAll(io.LimitReader(os.Stdin, maxStdinBytes+1))
 		if readErr == nil && len(stdinData) > 0 {
-			text = strings.TrimSpace(string(stdinData))
+			if len(stdinData) > maxStdinBytes {
+				fmt.Fprintf(os.Stderr, "%s\n", T(cfg.UILang, "err.stdin_too_large", maxStdinBytes/1024/1024))
+				return 1
+			}
+			text = strings.TrimRight(string(stdinData), "\r\n")
 		}
 	}
-	if text == "" {
+	if strings.TrimSpace(text) == "" {
 		// Only a bare `tr` (no arguments at all) opens the TUI. Arguments
 		// that carried no translatable text are a usage error instead of a
 		// surprise interactive session.
-		if len(args) <= 1 && isTerminal() {
+		if len(args) <= 1 && isStdinTTY() && isStdoutTTY() {
 			return runTUI(cfg)
 		}
 		fmt.Fprintln(os.Stderr, T(cfg.UILang, "err.empty_input"))
@@ -104,13 +127,23 @@ func Run(args []string) int {
 		return 1
 	}
 
-	// Load cache for translation
 	cache, cacheErr := NewCache()
 	if cacheErr != nil {
 		fmt.Fprintf(os.Stderr, "%s\n", T(cfg.UILang, "warn.cache_unavailable", cacheErr))
 	}
+	if cache != nil {
+		defer func() {
+			if err := cache.Flush(); err != nil {
+				fmt.Fprintf(os.Stderr, "%s\n", T(cfg.UILang, "warn.cache_save", err))
+			}
+		}()
+	}
 
-	transOpts := Options{Offline: opts.Offline}
+	transOpts := Options{
+		Offline:  opts.Offline,
+		Ctx:      context.Background(),
+		Progress: stderrProgress(cfg.UILang),
+	}
 	if hasArrow {
 		transOpts.Source = "auto"
 	}
@@ -122,9 +155,10 @@ func Run(args []string) int {
 		printLocalizedError(cfg.UILang, transErr)
 		return 1
 	}
-	fmt.Println("")
 	fmt.Print(result.Text)
-	fmt.Println()
+	if !strings.HasSuffix(result.Text, "\n") {
+		fmt.Println()
+	}
 	return 0
 }
 
@@ -144,8 +178,7 @@ func Run(args []string) int {
 // still translates both words.
 //
 // The clause is a one-shot override for this single invocation: it only affects
-// the Options handed to the pipeline and never writes the config file. Changing
-// the persistent target language is what `tr config set target_lang` is for.
+// the Options handed to the pipeline and never writes the config file.
 //
 // If an arrow is present but the target cannot be recognized as a language, the
 // whole line is treated as plain text (with a notice), so ordinary text
@@ -208,15 +241,6 @@ func isArrowArgument(arg string) bool {
 		strings.HasPrefix(arg, "->") || strings.HasPrefix(arg, "→")
 }
 
-// isPlainArgument reports whether an argument is a value rather than a flag or
-// an arrow clause, used when taking the optional output path of -f.
-func isPlainArgument(arg string) bool {
-	if strings.HasPrefix(arg, "-") || strings.HasPrefix(arg, "→") {
-		return false
-	}
-	return true
-}
-
 // runFileMode translates a file (-f): to stdout when no output path was given,
 // otherwise into the target file or directory.
 func runFileMode(cfg Config, opts CLIOptions, remaining []string) int {
@@ -230,8 +254,15 @@ func runFileMode(cfg Config, opts CLIOptions, remaining []string) int {
 	if cacheErr != nil {
 		fmt.Fprintf(os.Stderr, "%s\n", T(lang, "warn.cache_unavailable", cacheErr))
 	}
+	if cache != nil {
+		defer func() {
+			if err := cache.Flush(); err != nil {
+				fmt.Fprintf(os.Stderr, "%s\n", T(lang, "warn.cache_save", err))
+			}
+		}()
+	}
 
-	transOpts := Options{Offline: opts.Offline}
+	transOpts := Options{Offline: opts.Offline, Ctx: context.Background(), PreserveWhitespace: true}
 	// The arrow syntax also works for files: tr -f doc.txt -> en
 	target := ""
 	if _, code, hasArrow := splitArrow(lang, remaining); hasArrow {
@@ -246,10 +277,8 @@ func runFileMode(cfg Config, opts CLIOptions, remaining []string) int {
 	return 0
 }
 
-// isTerminal reports whether stdin is an interactive terminal (tty).
-func isTerminal() bool {
-	return term.IsTerminal(int(os.Stdin.Fd()))
-}
+func isStdinTTY() bool  { return term.IsTerminal(int(os.Stdin.Fd())) }
+func isStdoutTTY() bool { return term.IsTerminal(int(os.Stdout.Fd())) }
 
 // printLocalizedError prints a user-friendly error message based on the error sentinel.
 func printLocalizedError(lang string, err error) {
@@ -260,71 +289,102 @@ func printLocalizedError(lang string, err error) {
 		fmt.Fprintf(os.Stderr, "%s\n", T(lang, "err.offline"))
 	case errors.Is(err, ErrNoAIKey):
 		fmt.Fprintln(os.Stderr, T(lang, "err.no_key"))
-	case errors.Is(err, ErrAIFailed):
-		// The AI error already carries a localized, actionable message
-		// (bad key, no balance, rate limit, ...).
-		fmt.Fprintln(os.Stderr, errorDetail(err))
-	case errors.Is(err, ErrNetworkFailed):
-		fmt.Fprintf(os.Stderr, "%s: %v\n", T(lang, "err.network"), err)
-	case errors.Is(err, ErrNoTranslation):
-		fmt.Fprintf(os.Stderr, "%s\n", T(lang, "err.no_translation"))
 	default:
-		fmt.Fprintf(os.Stderr, "%s\n", T(lang, "err.translate_failed", err))
+		// AI/network/file errors already carry a localized, actionable
+		// message (bad key, no balance, rate limit, ...).
+		fmt.Fprintln(os.Stderr, err)
 	}
 }
 
 // parseArgs parses CLI arguments into CLIOptions and remaining text arguments.
-// Both subcommand style ("tr config show") and legacy flag style ("tr -config show")
-// are accepted.
+// Flags may appear anywhere; a bare "--" ends flag parsing so reserved words
+// and leading dashes become translatable text.
 func parseArgs(lang string, args []string) (CLIOptions, []string) {
 	opts := CLIOptions{}
-	var remaining []string
+	var positionals []string
+	fileMode := false
+	literal := false
 
 	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "config", "-config", "--config", "-c":
-			opts.Mode = ModeConfig
-			opts.ConfigArgs = args[i+1:]
-			return opts, nil // consume all remaining args
-		case "tui", "-tui", "--tui":
-			opts.Mode = ModeTUI
-			return opts, nil
-		case "-help", "--help", "-h":
-			opts.Mode = ModeHelp
-			return opts, nil
-		case "-version", "--version", "-v":
-			opts.Mode = ModeVersion
-			return opts, nil
-		case "-about", "--about", "-a":
-			opts.Mode = ModeAbout
-			return opts, nil
-		case "-offline", "--offline", "-o":
-			opts.Offline = true
-		case "-f", "--file":
-			opts.Mode = ModeFile
-			if i+1 < len(args) {
-				i++
-				opts.FileIn = args[i]
-				if i+1 < len(args) && isPlainArgument(args[i+1]) {
-					i++
-					opts.FileOut = args[i]
-				}
-			}
-		default:
-			if strings.HasPrefix(args[i], "-") {
-				// The arrow syntax starts with "-" ("->" / "->en"): keep it.
-				if strings.HasPrefix(args[i], "->") {
-					remaining = append(remaining, args[i])
-					continue
-				}
-				fmt.Fprintf(os.Stderr, "%s\n", T(lang, "warn.unknown_flag", args[i]))
+		arg := args[i]
+
+		if !literal && arg == "--" {
+			literal = true
+			continue
+		}
+
+		if !literal && strings.HasPrefix(arg, "-") && !isArrowArgument(arg) {
+			switch arg {
+			case "-help", "--help", "-h":
+				opts.Mode = ModeHelp
+			case "-version", "--version", "-v":
+				opts.Mode = ModeVersion
+			case "-about", "--about", "-a":
+				opts.Mode = ModeAbout
+			case "-offline", "--offline", "-o":
+				opts.Offline = true
+			case "-f", "--file":
+				opts.Mode = ModeFile
+				fileMode = true
+			case "-config", "--config", "-c":
+				opts.Mode = ModeConfig
+				opts.ConfigArgs = args[i+1:]
+				return opts, nil
+			default:
+				fmt.Fprintf(os.Stderr, "%s\n", T(lang, "warn.unknown_flag", arg))
 				opts.ParseError = true
-				continue
 			}
-			remaining = append(remaining, args[i])
+			continue
+		}
+
+		positionals = append(positionals, arg)
+	}
+
+	if opts.Mode == ModeHelp || opts.Mode == ModeVersion || opts.Mode == ModeAbout || opts.Mode == ModeTUI {
+		return opts, nil
+	}
+
+	// Reserved-word subcommands are recognized only when they look like one.
+	if !fileMode && !literal && len(positionals) >= 2 {
+		switch positionals[0] {
+		case "config":
+			if positionals[1] == "show" || positionals[1] == "set" || positionals[1] == "path" {
+				opts.Mode = ModeConfig
+				opts.ConfigArgs = positionals[1:]
+				return opts, nil
+			}
+		case "cache":
+			if positionals[1] == "clear" || positionals[1] == "stats" {
+				opts.Mode = ModeCache
+				opts.CacheArgs = positionals[1:]
+				return opts, nil
+			}
 		}
 	}
-	return opts, remaining
+	if !fileMode && !literal && len(positionals) == 1 && positionals[0] == "tui" {
+		opts.Mode = ModeTUI
+		return opts, nil
+	}
+
+	if fileMode {
+		opts.Mode = ModeFile
+		if len(positionals) > 0 {
+			opts.FileIn = positionals[0]
+			rest := positionals[1:]
+			if len(rest) > 0 && !isArrowArgument(rest[0]) {
+				opts.FileOut = rest[0]
+				rest = rest[1:]
+			}
+			if len(rest) > 0 && !isArrowArgument(rest[0]) {
+				fmt.Fprintln(os.Stderr, T(lang, "err.file_usage"))
+				opts.ParseError = true
+				return opts, nil
+			}
+			return opts, rest
+		}
+	}
+
+	return opts, positionals
 }
 
 // runConfigCommand handles the config subcommand.
@@ -347,26 +407,82 @@ func runConfigCommand(cfg Config, args []string) int {
 		fmt.Println(T(lang, "config.ai_thinking", cfg.AIThinking))
 		fmt.Println(T(lang, "config.file", ConfigPath()))
 		return 0
+	case "path":
+		fmt.Println(ConfigPath())
+		return 0
 	case "set":
+		if len(args) == 2 && args[1] == "api_key" {
+			secret, err := readSecret(T(lang, "config.api_key_prompt"))
+			if err != nil {
+				fmt.Fprintln(os.Stderr, T(lang, "config.api_key_read_failed", err))
+				return 1
+			}
+			cfg.APIKey = strings.TrimSpace(secret)
+			cfg.apiKeyFromEnv = false
+			cfg.apiKeyFromDefault = false
+			if err := cfg.Save(); err != nil {
+				fmt.Fprintln(os.Stderr, T(lang, "config.save_failed", err))
+				return 1
+			}
+			fmt.Println(T(lang, "config.set_ok", "api_key", MaskKey(cfg.APIKey)))
+			return 0
+		}
 		if len(args) != 3 {
 			fmt.Println(T(lang, "config.usage_set"))
 			fmt.Println(T(lang, "config.valid_keys"))
 			return 2
 		}
 		key, val := args[1], args[2]
+		if key == "api_key" && val == "-" {
+			secret, err := readSecret(T(lang, "config.api_key_prompt"))
+			if err != nil {
+				fmt.Fprintln(os.Stderr, T(lang, "config.api_key_read_failed", err))
+				return 1
+			}
+			val = secret
+		}
 		switch key {
 		case "source_lang":
-			cfg.SourceLang = strings.ToLower(val)
+			code, ok := normalizeLangValue(val, true)
+			if !ok {
+				fmt.Println(T(lang, "config.invalid_lang", val))
+				return 2
+			}
+			cfg.SourceLang = code
 		case "target_lang":
-			cfg.TargetLang = strings.ToLower(val)
+			code, ok := normalizeLangValue(val, false)
+			if !ok {
+				fmt.Println(T(lang, "config.invalid_lang", val))
+				return 2
+			}
+			cfg.TargetLang = code
 		case "ui_lang":
-			cfg.UILang = strings.ToLower(val)
+			val = strings.ToLower(strings.TrimSpace(val))
+			switch val {
+			case "zh", "en", "ja":
+				cfg.UILang = val
+			default:
+				fmt.Println(T(lang, "config.invalid_ui_lang", val))
+				return 2
+			}
 		case "api_key":
 			cfg.APIKey = strings.TrimSpace(val)
+			cfg.apiKeyFromEnv = false
+			cfg.apiKeyFromDefault = false
 		case "ai_base_url":
-			cfg.AIBaseURL = strings.TrimSpace(val)
+			val = strings.TrimSpace(val)
+			if err := validateBaseURL(val); err != nil {
+				fmt.Println(T(lang, "config.invalid_url", val, err))
+				return 2
+			}
+			cfg.AIBaseURL = val
 		case "ai_model":
-			cfg.AIModel = strings.TrimSpace(val)
+			val = strings.TrimSpace(val)
+			if val == "" {
+				fmt.Println(T(lang, "config.invalid_model"))
+				return 2
+			}
+			cfg.AIModel = val
 		case "ai_thinking":
 			on, ok := parseBoolArg(val)
 			if !ok {
@@ -383,8 +499,15 @@ func runConfigCommand(cfg Config, args []string) int {
 			return 1
 		}
 		shown := val
-		if key == "api_key" {
+		switch key {
+		case "api_key":
 			shown = MaskKey(val)
+		case "source_lang":
+			shown = cfg.SourceLang
+		case "target_lang":
+			shown = cfg.TargetLang
+		case "ui_lang":
+			shown = cfg.UILang
 		}
 		fmt.Println(T(lang, "config.set_ok", key, shown))
 		return 0
@@ -392,6 +515,47 @@ func runConfigCommand(cfg Config, args []string) int {
 		fmt.Println(T(lang, "config.unknown_subcmd", args[0]))
 		return 2
 	}
+}
+
+// runCacheCommand handles "tr cache clear|stats".
+func runCacheCommand(cfg Config, args []string) int {
+	lang := cfg.UILang
+	if len(args) == 0 {
+		fmt.Println(T(lang, "cache.usage"))
+		return 2
+	}
+	cache, err := NewCache()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, T(lang, "warn.cache_unavailable", err))
+	}
+
+	switch args[0] {
+	case "clear":
+		cache.Clear()
+		if err := cache.Flush(); err != nil {
+			fmt.Fprintln(os.Stderr, T(lang, "warn.cache_save", err))
+			return 1
+		}
+		fmt.Println(T(lang, "cache.cleared"))
+		return 0
+	case "stats":
+		fmt.Println(T(lang, "cache.stats", cache.Stats(), filepath.Join(ConfigDir(), cacheFileName)))
+		return 0
+	default:
+		fmt.Println(T(lang, "cache.usage"))
+		return 2
+	}
+}
+
+func readSecret(prompt string) (string, error) {
+	fmt.Fprint(os.Stderr, prompt)
+	defer fmt.Fprintln(os.Stderr)
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		data, err := term.ReadPassword(int(os.Stdin.Fd()))
+		return string(data), err
+	}
+	data, err := io.ReadAll(io.LimitReader(os.Stdin, 4096))
+	return strings.TrimSpace(string(data)), err
 }
 
 func printHelp(lang string) {
@@ -405,6 +569,7 @@ func printHelp(lang string) {
 	fmt.Println(T(lang, "help.tui"))
 	fmt.Println(T(lang, "help.tui_cmd"))
 	fmt.Println(T(lang, "help.config_cmd"))
+	fmt.Println(T(lang, "help.cache_cmd"))
 	fmt.Println(T(lang, "help.offline"))
 	fmt.Println(T(lang, "help.help"))
 	fmt.Println(T(lang, "help.version"))
@@ -425,6 +590,7 @@ func printHelp(lang string) {
 	fmt.Println(T(lang, "help.flags_help"))
 	fmt.Println(T(lang, "help.flags_version"))
 	fmt.Println(T(lang, "help.flags_about"))
+	fmt.Println(T(lang, "help.flags_dashdash"))
 	fmt.Println()
 	fmt.Println(T(lang, "help.pipe_title"))
 	fmt.Println(T(lang, "help.pipe_example"))
@@ -484,13 +650,22 @@ func printAbout(lang string) {
 	fmt.Println(T(lang, "app.repo"))
 }
 
-// keyOrUnset renders the configured AI key (masked) or a placeholder when none
-// is set.
+// keyOrUnset renders the configured AI key (masked), the environment key
+// source, or a placeholder when none is set.
 func keyOrUnset(cfg Config, lang string) string {
-	if !cfg.HasAI() {
-		return T(lang, "config.key_unset")
+	if env := envAIKeyName(); env != "" {
+		return T(lang, "config.key_env", env)
 	}
-	return MaskKey(cfg.APIKey)
+	if cfg.HasAIKey() {
+		return MaskKey(cfg.APIKey)
+	}
+	if key := strings.TrimSpace(DefaultAPIKey); key != "" {
+		return T(lang, "config.key_default", MaskKey(key))
+	}
+	if isKeylessEndpoint(cfg.AIBaseURL) {
+		return T(lang, "config.key_free")
+	}
+	return T(lang, "config.key_unset")
 }
 
 // parseBoolArg accepts the usual spellings for boolean config values.

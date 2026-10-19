@@ -77,8 +77,8 @@ func TestTUICtrlArrowLanguageSwitch(t *testing.T) {
 	if m.focus != tuiFocusResult {
 		t.Fatalf("focus = %v, want result", m.focus)
 	}
-	if _, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlRight}); m.cfg.TargetLang != "en" {
-		t.Fatalf("target language = %q after ctrl+right, want en", m.cfg.TargetLang)
+	if _, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlRight}); m.cfg.TargetLang != "zh-hant" {
+		t.Fatalf("target language = %q after ctrl+right, want zh-hant", m.cfg.TargetLang)
 	}
 	if m.cfg.SourceLang != "en" {
 		t.Fatalf("source language changed to %q unexpectedly", m.cfg.SourceLang)

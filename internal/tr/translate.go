@@ -1,25 +1,55 @@
 package tr
 
 import (
+	"context"
 	"errors"
-	"fmt"
 	"strings"
 )
 
 // Error sentinels for the translation pipeline.
 var (
 	ErrEmptyInput     = errors.New("input text is empty")
-	ErrNoTranslation  = errors.New("no translation available")
 	ErrOfflineNoCache = errors.New("offline mode: text not found in cache or dictionary")
 	ErrNetworkFailed  = errors.New("network request failed")
 	ErrAIFailed       = errors.New("ai translation failed")
 	ErrNoAIKey        = errors.New("no ai key configured")
 )
 
+// pipelineError carries an already-localized message while still allowing
+// errors.Is to match the pipeline sentinel and the underlying cause.
+type pipelineError struct {
+	kind  error
+	msg   string
+	cause error
+}
+
+func (e *pipelineError) Error() string { return e.msg }
+
+func (e *pipelineError) Unwrap() []error {
+	if e.cause != nil {
+		return []error{e.kind, e.cause}
+	}
+	return []error{e.kind}
+}
+
+func wrapPipeline(kind error, msg string, cause error) error {
+	return &pipelineError{kind: kind, msg: msg, cause: cause}
+}
+
 // Options carries per-invocation runtime flags (not persisted to config).
 type Options struct {
-	Offline bool   // force offline mode; skip AI calls
-	Source  string // override source language; "auto" = detect from text
+	Offline            bool                  // force offline mode; skip AI calls
+	Source             string                // override source language; "auto" = detect from text
+	Ctx                context.Context       // request cancellation; nil = background
+	Progress           func(done, total int) // long-text progress callback; nil = silent
+	PreserveWhitespace bool                  // keep leading/trailing spaces (file translation)
+}
+
+func (o Options) context() context.Context {
+	if o.Ctx != nil {
+		return o.Ctx
+	}
+	return context.Background()
 }
 
 // TranslateResult holds the completed translation and metadata about its source.
@@ -35,8 +65,8 @@ type TranslateResult struct {
 //
 // target is the per-call target language:
 //
-//   - empty  → the configured target_lang is used (the config file is read);
-//   - set    → that value is used as-is and the configured target is not
+//   - empty  -> the configured target_lang is used (the config file is read);
+//   - set    -> that value is used as-is and the configured target is not
 //     consulted at all, so a "-> <lang>" invocation neither reads nor
 //     writes the configured target.
 //
@@ -45,9 +75,11 @@ type TranslateResult struct {
 //
 // The cache is consulted first on purpose: a repeated translation must never
 // cost a request, and with an AI backend that means it must never cost tokens.
+//
+// The source text is never trimmed: file translation depends on indentation
+// and leading/trailing whitespace being preserved.
 func Translate(cfg Config, opts Options, cache *Cache, text, target string) (TranslateResult, error) {
-	text = strings.TrimSpace(text)
-	if text == "" {
+	if strings.TrimSpace(text) == "" {
 		return TranslateResult{}, ErrEmptyInput
 	}
 
@@ -58,35 +90,44 @@ func Translate(cfg Config, opts Options, cache *Cache, text, target string) (Tra
 	if source == "auto" {
 		source = DetectLang(text)
 	}
+	source = canonicalLangCode(source)
+
 	if target == "" {
 		target = cfg.TargetLang
 	}
+	target = canonicalLangCode(target)
 
-	normalized := normalizeCacheKey(text)
+	scope := cfg.CacheScope()
 	lang := cfg.UILang
 
-	// Step 1: cache — free, instant, and saves tokens for repeated text.
+	// Step 1: cache -- free, instant, and saves tokens for repeated text.
 	if cache != nil {
-		if cached, ok := cache.Get(source, target, normalized); ok {
+		if cached, ok := cache.Get(scope, source, target, text); ok {
 			return TranslateResult{Text: cached, Source: "cache"}, nil
 		}
 	}
 
 	if !opts.Offline {
-		// Step 2: AI. Translation goes through the AI backend only; without a
-		// key the user gets an actionable error instead of a silent downgrade
-		// to a different engine.
-		if !cfg.HasAI() {
+		if !cfg.AIReady() {
 			return TranslateResult{}, ErrNoAIKey
 		}
-		result, err := translateTextViaAI(cfg, text, source, target, lang)
+		result, cached, err := translateTextViaAI(cfg, cache, scope, text, source, target, lang, opts)
+		if err == nil && source != target && strings.TrimSpace(result) == strings.TrimSpace(text) {
+			err = wrapPipeline(ErrAIFailed, T(lang, "ai.echo"), nil)
+		}
 		if err != nil {
-			return TranslateResult{}, fmt.Errorf("%w: %v", ErrAIFailed, err)
+			return TranslateResult{}, err
 		}
-		if cache != nil {
-			cache.Put(source, target, normalized, result)
+		// Short results are cached as a whole; long documents are cached per
+		// chunk inside translateTextViaAI.
+		if cache != nil && len([]rune(text)) <= aiRequestChars {
+			cache.Put(scope, source, target, text, result)
 		}
-		return TranslateResult{Text: result, Source: "ai"}, nil
+		origin := "ai"
+		if cached {
+			origin = "cache"
+		}
+		return TranslateResult{Text: result, Source: origin}, nil
 	}
 
 	// Step 3 (offline only): built-in dictionary (en-zh, word level).
@@ -98,20 +139,20 @@ func Translate(cfg Config, opts Options, cache *Cache, text, target string) (Tra
 	return TranslateResult{}, ErrOfflineNoCache
 }
 
-// normalizeCacheKey lowercases and collapses whitespace for consistent cache keys.
-func normalizeCacheKey(s string) string {
-	s = strings.ToLower(s)
-	return strings.Join(strings.Fields(s), " ")
+// canonicalLangCode normalizes aliases to ISO 639-1 codes, leaving custom
+// codes intact for backends that understand them.
+func canonicalLangCode(code string) string {
+	code = strings.TrimSpace(code)
+	if c, ok := normalizeLangArg(code); ok {
+		return c
+	}
+	return strings.ToLower(code)
 }
 
-// errorDetail strips the internal sentinel prefix from a pipeline error so the
-// remaining, already localized message can be shown on its own.
-func errorDetail(err error) string {
-	s := err.Error()
-	for _, sentinel := range []error{ErrAIFailed, ErrNetworkFailed, ErrNoTranslation} {
-		if prefix := sentinel.Error() + ": "; strings.HasPrefix(s, prefix) {
-			return strings.TrimPrefix(s, prefix)
-		}
-	}
-	return s
+// isFatalTranslationError reports whether retrying smaller pieces cannot help.
+func isFatalTranslationError(err error) bool {
+	return errors.Is(err, ErrNoAIKey) ||
+		errors.Is(err, ErrAIFailed) ||
+		errors.Is(err, ErrNetworkFailed) ||
+		errors.Is(err, ErrEmptyInput)
 }
