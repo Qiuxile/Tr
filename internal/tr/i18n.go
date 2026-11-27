@@ -73,7 +73,7 @@ var zhMessages = map[string]string{
 	"file.written":  "已写入: %s",
 
 	// Config
-	"config.usage_show_set": "用法: tr config show|set|path ...   (兼容: tr -config ...)",
+	"config.usage_show_set": "用法: tr config(交互向导) 或 tr config show|set|path ...   (兼容: tr -config ...)",
 	"config.current":        "当前配置:",
 	"config.source_lang":    "  source_lang = %s",
 	"config.target_lang":    "  target_lang = %s",
@@ -106,7 +106,7 @@ var zhMessages = map[string]string{
 	"help.about":          "  tr -about                  显示关于信息",
 
 	"help.flags_title":   "选项:",
-	"help.flags_config":  "  -config, --config, -c   查看/修改配置 (等效 tr config ...)",
+	"help.flags_config":  "  -config, --config, -c   配置向导/子命令 (等效 tr config ...)",
 	"help.flags_help":    "  -help,   --help,   -h   显示帮助",
 	"help.flags_version": "  -version,--version, -v  显示版本",
 	"help.flags_about":   "  -about,  --about,   -a  显示关于",
@@ -237,6 +237,8 @@ var zhMessages = map[string]string{
 	"ai.echo":                    "AI 返回了原文,可能未执行翻译",
 	"ai.free_limit":              "免费 AI 接口限流(约每 30 秒 1 次),请稍后重试或配置自己的服务商",
 	"config.key_default":         "(内置默认密钥 %s)",
+	"config.wizard_needs_tty":    "提示: tr config 的交互向导需要在终端中运行;非交互环境请用 tr config show|set|path。",
+	"help.config_wizard":         "  tr config                   打开交互式配置向导",
 }
 
 // --- English (en) messages ------------------------------------------------
@@ -276,7 +278,7 @@ var enMessages = map[string]string{
 	"file.written":  "Written: %s",
 
 	// Config
-	"config.usage_show_set": "Usage: tr config show|set|path ...   (alias: tr -config ...)",
+	"config.usage_show_set": "Usage: tr config (guided wizard) or tr config show|set|path ...   (alias: tr -config ...)",
 	"config.current":        "Current configuration:",
 	"config.source_lang":    "  source_lang = %s",
 	"config.target_lang":    "  target_lang = %s",
@@ -309,7 +311,7 @@ var enMessages = map[string]string{
 	"help.about":          "  tr -about                  Show about information",
 
 	"help.flags_title":   "Flags:",
-	"help.flags_config":  "  -config, --config, -c   View/set config (same as tr config ...)",
+	"help.flags_config":  "  -config, --config, -c   Config wizard/subcommands (same as tr config ...)",
 	"help.flags_help":    "  -help,   --help,   -h   Show help",
 	"help.flags_version": "  -version,--version, -v  Show version",
 	"help.flags_about":   "  -about,  --about,   -a  Show about",
@@ -440,6 +442,8 @@ var enMessages = map[string]string{
 	"ai.echo":                    "The AI returned the input unchanged; translation may have failed",
 	"ai.free_limit":              "Free AI endpoint is rate-limited (about one request every 30 seconds); retry later or configure your own provider",
 	"config.key_default":         "(built-in default key %s)",
+	"config.wizard_needs_tty":    "Note: the tr config wizard needs an interactive terminal; use tr config show|set|path in scripts.",
+	"help.config_wizard":         "  tr config                   Open the guided configuration wizard",
 }
 
 // --- Japanese (ja) messages -----------------------------------------------
@@ -479,7 +483,7 @@ var jaMessages = map[string]string{
 	"file.written":  "書き込み完了: %s",
 
 	// Config
-	"config.usage_show_set": "使い方: tr config show|set|path ...   (別名: tr -config ...)",
+	"config.usage_show_set": "使い方: tr config (対話ウィザード) または tr config show|set|path ...   (別名: tr -config ...)",
 	"config.current":        "現在の設定:",
 	"config.source_lang":    "  source_lang = %s",
 	"config.target_lang":    "  target_lang = %s",
@@ -512,7 +516,7 @@ var jaMessages = map[string]string{
 	"help.about":          "  tr -about                    アプリ情報を表示",
 
 	"help.flags_title":   "オプション:",
-	"help.flags_config":  "  -config, --config, -c   設定の表示/変更 (tr config ... と同等)",
+	"help.flags_config":  "  -config, --config, -c   設定ウィザード/サブコマンド (tr config ... と同等)",
 	"help.flags_help":    "  -help,   --help,   -h   ヘルプを表示",
 	"help.flags_version": "  -version,--version, -v  バージョンを表示",
 	"help.flags_about":   "  -about,  --about,   -a  アプリ情報を表示",
@@ -643,4 +647,6 @@ var jaMessages = map[string]string{
 	"ai.echo":                    "AI が原文をそのまま返しました。翻訳に失敗した可能性があります",
 	"ai.free_limit":              "無料 AI エンドポイントは約30秒に1回の制限があります。後で再試行するか、独自サービスを設定してください",
 	"config.key_default":         "(内蔵デフォルトキー %s)",
+	"config.wizard_needs_tty":    "ヒント: tr config の対話ウィザードは対話型ターミナルが必要です。スクリプトでは tr config show|set|path を使用してください。",
+	"help.config_wizard":         "  tr config                   設定ウィザードを開く",
 }

@@ -69,8 +69,12 @@ tr                        # 无参数：进入交互式 TUI
 发布版可以内置默认 key，源码构建默认不带 key，需要先配置：
 
 ```bash
+tr config                          # 交互式向导（推荐）
+# 或直接设置
 tr config set api_key sk-xxxxxxxxxxxxxxxx
 ```
+
+`tr config` 会依次引导选择服务商、填写地址/模型/key、设置语言；key 输入框使用密码模式，不会明文回显。
 
 默认地址已经是智谱 BigModel：
 
@@ -101,6 +105,7 @@ TR_API_KEY=sk-xxx tr "hello world"
 
 - **纯 AI 翻译** — 翻译统一走 OpenAI 兼容接口，默认智谱 BigModel（GLM-5.3-Flash）。
 - **开箱即用** — 内置默认 key（发布时注入）或用户 key 均可；无 key 时可用 `-o` 离线。
+- **配置向导** — `tr config` 分步引导选择服务商、填写 key、设置语言。
 - **CLI 友好** — 输出干净，适合管道、脚本和 `$(...)`；支持 stdin。
 - **TUI** — 左右布局、多行输入、译文滚动、语言切换、内建系统命令行。
 - **文件翻译** — 按行分块、保留缩进/BOM/CRLF，可输出到终端、文件或目录。
@@ -136,11 +141,11 @@ go install github.com/Qiuxile/Tr@latest
 仓库里的 `setup.iss` 是 Inno Setup 脚本：
 
 ```powershell
-go build -trimpath -ldflags "-s -w -X github.com/Qiuxile/Tr/internal/tr.Version=2.2.0" -o Output\Tr.exe .
+go build -trimpath -ldflags "-s -w -X github.com/Qiuxile/Tr/internal/tr.Version=2.2.1" -o Output\Tr.exe .
 iscc setup.iss
 ```
 
-产物为 `Output/Tr_v2.2.0_Setup.exe`，会把 `tr.exe` 安装到 `Program Files\Tr`，并按任务选择加入 `PATH`。
+产物为 `Output/Tr_v2.2.1_Setup.exe`，会把 `tr.exe` 安装到 `Program Files\Tr`，并按任务选择加入 `PATH`。
 
 ### 加入 PATH
 
@@ -181,6 +186,7 @@ tr -o "hello"
 tr -o -f docs/en.md
 
 # 配置
+tr config                      # 交互式配置向导
 tr config show
 tr config set target_lang ja
 tr config path
@@ -205,7 +211,8 @@ tr -about
 | `tr tui` | 显式启动 TUI |
 | `tr -f <文件> [输出]` | 翻译文件；省略输出打印到终端，给出路径则写入文件/目录 |
 | `tr -o` / `--offline` | 强制离线（缓存 + 内置词典，不联网） |
-| `tr config show\|set\|path` | 查看/修改配置、打印配置文件路径 |
+| `tr config` | 打开交互式配置向导（服务商、URL、模型、key、语言） |
+| `tr config show\|set\|path` | 命令行查看/修改配置、打印配置文件路径 |
 | `tr cache stats\|clear` | 查看/清空翻译缓存 |
 | `tr -help` / `-version` / `-about` | 帮助 / 版本 / 关于 |
 
@@ -578,6 +585,7 @@ tr -o -f docs/en.md
 ### 修改配置
 
 ```bash
+tr config                      # 交互式向导：选择服务商、填 key、语言
 tr config show
 tr config set target_lang ja
 tr config set source_lang auto
@@ -587,6 +595,17 @@ tr config set ai_model deepseek-flash
 tr config set api_key sk-xxxxxxxx
 tr config path
 ```
+
+`tr config` 会进入一个分步向导：
+
+1. 选择服务商（智谱 GLM / DeepSeek / OpenAI / 本地模型 / 自定义）
+2. 填写 Base URL、模型、API Key（key 使用密码模式显示，留空保持已有）
+3. 设置源语言、目标语言、界面语言
+4. 确认后写入配置文件
+
+快捷键：`↑/↓` 选择服务商，`Enter` 继续，`Tab` / `Shift+Tab` 切换字段，`Esc` 返回，`Ctrl+S` 保存，`Ctrl+K` 清除已保存的 key，`Ctrl+T` 切换思考模式，`Ctrl+Q` 取消。
+
+非交互环境（管道/CI）请使用 `tr config show|set|path`，不会启动 TUI。
 
 配置值会做校验：
 
@@ -684,6 +703,7 @@ Run(args)
 - `--` 之后全部按文本处理；
 - `-f` 只消费位置参数，不会把 `-o` 当成文件名；
 - `config show|set|path`、`cache clear|stats` 只在“看起来像子命令”时生效；
+- 裸 `tr config` 打开交互向导；`tr -- config` 才翻译单词 “config”；
 - `tui` 仅在它是唯一位置参数时作为命令；翻译单词 `tui` 用 `tr -- tui`。
 
 ### 并发与性能
@@ -723,7 +743,7 @@ go build -trimpath -ldflags "-s -w" -o tr .
 
 ```bash
 go build -trimpath -ldflags \
-  "-s -w -X github.com/Qiuxile/Tr/internal/tr.Version=2.2.0 -X github.com/Qiuxile/Tr/internal/tr.DefaultAPIKey=sk-..." \
+  "-s -w -X github.com/Qiuxile/Tr/internal/tr.Version=2.2.1 -X github.com/Qiuxile/Tr/internal/tr.DefaultAPIKey=sk-..." \
   -o tr .
 ```
 
@@ -775,7 +795,7 @@ tr cache stats
 1. 构建：
 
 ```powershell
-go build -trimpath -ldflags "-s -w -X github.com/Qiuxile/Tr/internal/tr.Version=2.2.0" -o Output\Tr.exe .
+go build -trimpath -ldflags "-s -w -X github.com/Qiuxile/Tr/internal/tr.Version=2.2.1" -o Output\Tr.exe .
 ```
 
 2. 用 Inno Setup 编译：
@@ -848,9 +868,9 @@ TR_API_KEY=sk-xxxx tr "..."
 
 tr 只处理 UTF-8 文本。请先转码（例如 `iconv -f gbk -t utf-8`），再翻译。
 
-**`tr config` 不显示配置**
+**想看当前配置**
 
-现在 `tr config` 会被当作普通文本翻译；查看配置请用 `tr config show`。翻译单词 “config” 用 `tr -- config`。
+`tr config` 会打开交互式配置向导；查看当前值请用 `tr config show`。翻译单词 “config” 用 `tr -- config`。
 
 **`tr tui` 和翻译单词 “tui”**
 
@@ -894,6 +914,7 @@ tr 会先执行 `chcp 65001`。如果个别程序仍输出 GBK，需要在该程
 
 ## 历史
 
+- **v2.2.1** — 新增 `tr config` 分步配置向导：服务商预设、Base URL/模型/key 引导输入、密钥密码模式、已有 key 保留/清除、源/目标/界面语言设置、保存前校验；修复 `tr config` 与配置子命令的分发。
 - **v2.2.0** — 翻译统一为 AI 后端；默认智谱 BigModel GLM-5.3-Flash，支持内置默认 key；新增 `cache` 子命令、隐藏密钥输入、环境变量覆盖；修复文件翻译缩进/尾空行/请求放大、CLI 多余空行、`-f -o` 解析、缓存 LRU/模型隔离/原子写、TUI 进度污染与 shell 输出上限；模块路径改为 `github.com/Qiuxile/Tr`；补充大量测试与安装包元数据。
 - **v2.1.0** — 箭头语法、长文本分块、AI 后端与省 token 策略完善。
 - **v2.0.0** — 移除 Wails 桌面壳与 Vue 前端，回归 CLI + TUI；新增 `-f`、`->`、中/英/日界面。

@@ -1,16 +1,16 @@
 ﻿; setup.iss -- Inno Setup script for Tr
-; Build first:  go build -trimpath -ldflags "-s -w -X github.com/Qiuxile/Tr/internal/tr.Version=2.2.0" -o Output\Tr.exe .
+; Build first:  go build -trimpath -ldflags "-s -w -X github.com/Qiuxile/Tr/internal/tr.Version=2.2.1" -o Output\Tr.exe .
 ; Then compile: iscc setup.iss
 
 [Setup]
 AppId={{6F1C2B7A-3D4E-4F8A-9B21-7C5D0E9A4F13}
 AppName=Tr
-AppVersion=2.2.0
+AppVersion=2.2.1
 AppPublisher=Qiuxile
 AppPublisherURL=https://github.com/Qiuxile/Tr
 AppSupportURL=https://github.com/Qiuxile/Tr/issues
 AppUpdatesURL=https://github.com/Qiuxile/Tr/releases
-VersionInfoVersion=2.2.0
+VersionInfoVersion=2.2.1
 VersionInfoDescription=Tr Terminal Translator Setup
 VersionInfoCompany=Qiuxile
 VersionInfoCopyright=Copyright (c) 2026 Surile
@@ -21,7 +21,7 @@ Compression=lzma2
 SolidCompression=yes
 PrivilegesRequired=admin
 ChangesEnvironment=yes
-OutputBaseFilename=Tr_v2.2.0_Setup
+OutputBaseFilename=Tr_v2.2.1_Setup
 SetupIconFile=assets\Tr.ico
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible

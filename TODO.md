@@ -1,4 +1,4 @@
-# Tr 开发路线 (v2.2.0+ CLI/TUI)
+# Tr 开发路线 (v2.2.1+ CLI/TUI)
 
 > 项目为纯终端形态：Go CLI + bubbletea TUI，翻译统一走 AI 后端，无 GUI/Web 依赖。
 
@@ -18,7 +18,7 @@
 
 ### v2.2.0
 - [x] 翻译统一为 AI 后端，移除独立翻译后端
-- [x] 默认 Pollinations 免费 AI（`openai-fast`），无需 key 即可试用
+- [x] 默认智谱 BigModel GLM-5.3-Flash；支持 keyless 本地/Pollinations 端点
 - [x] 支持内置默认 key（`DefaultAPIKey`，ldflags 注入）与环境变量覆盖
 - [x] 默认 key / 环境变量 key 不写回 `config.json`
 - [x] 缓存重写：真正 LRU、模型/服务商隔离、原子写盘、大小上限
@@ -30,6 +30,10 @@
 - [x] 模块路径改为 `github.com/Qiuxile/Tr`，版本可 ldflags 注入
 - [x] 安装包：UTF-8 BOM、AppId、发布者/版本元数据、x64 限制
 - [x] 测试：AI/缓存/配置/文件/参数/语言/词典
+
+### v2.2.1
+- [x] `tr config` 分步配置向导（服务商/连接/偏好/确认）
+- [x] 配置向导密钥密码模式、已有 key 保留/清除、保存前校验
 
 ## 待办想法
 

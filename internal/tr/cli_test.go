@@ -22,7 +22,7 @@ func TestParseArgs(t *testing.T) {
 		{"dashdash config is text", []string{"--", "config"}, ModeTranslate, false, "", "", []string{"config"}, false},
 		{"dashdash tui is text", []string{"--", "tui"}, ModeTranslate, false, "", "", []string{"tui"}, false},
 		{"config subcommand", []string{"config", "show"}, ModeConfig, false, "", "", nil, false},
-		{"bare config is text", []string{"config"}, ModeTranslate, false, "", "", []string{"config"}, false},
+		{"bare config opens wizard", []string{"config"}, ModeConfig, false, "", "", nil, false},
 		{"tui", []string{"tui"}, ModeTUI, false, "", "", nil, false},
 		{"cache subcommand", []string{"cache", "clear"}, ModeCache, false, "", "", nil, false},
 		{"unknown flag", []string{"hello", "--bogus"}, ModeTranslate, false, "", "", []string{"hello"}, true},

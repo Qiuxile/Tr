@@ -15,8 +15,8 @@ import (
 // Version is the application version. It is a variable so release builds can
 // inject the tag:
 //
-//	go build -ldflags "-X github.com/Qiuxile/Tr/internal/tr.Version=2.2.0"
-var Version = "2.2.0"
+//	go build -ldflags "-X github.com/Qiuxile/Tr/internal/tr.Version=2.2.1"
+var Version = "2.2.1"
 
 // Mode represents the CLI dispatch mode.
 type Mode int
@@ -76,6 +76,14 @@ func Run(args []string) int {
 	case ModeConfig:
 		// Config commands operate on the file only. Applying an environment
 		// key here would write that secret back to disk on an unrelated set.
+		if len(opts.ConfigArgs) == 0 {
+			if !isStdinTTY() || !isStdoutTTY() {
+				fmt.Fprintln(os.Stderr, T(cfg.UILang, "config.usage_show_set"))
+				fmt.Fprintln(os.Stderr, T(cfg.UILang, "config.wizard_needs_tty"))
+				return 2
+			}
+			return runConfigWizard(cfg)
+		}
 		return runConfigCommand(cfg, opts.ConfigArgs)
 	case ModeCache:
 		return runCacheCommand(cfg, opts.CacheArgs)
@@ -365,6 +373,12 @@ func parseArgs(lang string, args []string) (CLIOptions, []string) {
 		opts.Mode = ModeTUI
 		return opts, nil
 	}
+	if !fileMode && !literal && len(positionals) == 1 && positionals[0] == "config" {
+		// "tr config" opens the guided setup; "tr -- config" still translates
+		// the literal word.
+		opts.Mode = ModeConfig
+		return opts, nil
+	}
 
 	if fileMode {
 		opts.Mode = ModeFile
@@ -568,6 +582,7 @@ func printHelp(lang string) {
 	fmt.Println(T(lang, "help.file"))
 	fmt.Println(T(lang, "help.tui"))
 	fmt.Println(T(lang, "help.tui_cmd"))
+	fmt.Println(T(lang, "help.config_wizard"))
 	fmt.Println(T(lang, "help.config_cmd"))
 	fmt.Println(T(lang, "help.cache_cmd"))
 	fmt.Println(T(lang, "help.offline"))
